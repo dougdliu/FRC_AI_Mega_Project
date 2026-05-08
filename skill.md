@@ -23,6 +23,7 @@
 - **Output:**
 	- `manual_insight_packet.json`
 	- `strategy_hypotheses.md`
+	- `manual_insight_analysis.md` — comprehensive human-readable report covering all 10 primary sections, the six Question Matrix answers with citations, and open Q&A items
 	- `risk_register.json`
 	- `citation_index.json`
 - **Primary Sections (in required order):**
