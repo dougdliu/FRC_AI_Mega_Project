@@ -133,11 +133,53 @@
 - **Prompt Template:** `Analyze logs for {drift, lag, missed scoring}. Generate targeted code patches and PID retuning. Validate against simulation bounds.`
 
 ## Skill Dependency Graph
-- PDF Rule Extraction -> Game Mechanics Modeling
-- Game Mechanics Modeling -> Monte Carlo Strategy Simulation
-- Monte Carlo Strategy Simulation -> WPILib Robot Code Generation
-- WPILib Robot Code Generation + 2D Physics Simulation -> AdvantageScope Log Integration
-- All skills -> Iterative Log-Assisted Dev
+
+### Core Pipeline Flow (internal skills)
+```
+[anthropic/pdf]
+    └─> PDF Rule Extraction
+            └─> Game Mechanics Modeling  ──[codex/jupyter-notebook]
+                    └─> Monte Carlo Strategy Simulation  ──[codex/jupyter-notebook]
+                            └─> WPILib Robot Code Generation  ──[anthropic/claude-api]
+                                    └─> AdvantageScope Log Integration
+                                            └─> Iterative Log-Assisted Dev
+                            │
+                            └─> Strategy Synthesis  ──[anthropic/doc-coauthoring]
+                                    └─> WPILib Robot Code Generation
+
+[anthropic/xlsx]
+    └─> Power Usage Modeling  (parallel with robot_codegen)
+
+[anthropic/frontend-design] + [anthropic/webapp-testing] + [codex/playwright] + [codex/playwright-interactive]
+    └─> Scouting App Development  (parallel with robot_codegen)
+
+[codex/screenshot]
+    └─> 2D Physics Simulation  ──> AdvantageScope Log Integration
+
+[codex/security-best-practices] + [codex/security-threat-model]
+    └─> qa_validator  (gate over all parallel outputs)
+
+[codex/cli-creator]
+    └─> Pipeline CLI  (wraps orchestrator entry point)
+
+[anthropic/mcp-builder]  (used when implementing any of the 8 MCPs in mcps.md)
+    └─> all pipeline stages that call MCP servers
+
+[codex/gh-fix-ci]
+    └─> CI automation  (post-pipeline)
+
+[codex/yeet]
+    └─> Artifact release  (post-qa_validator)
+```
+
+### Dependency Rules
+- `anthropic/pdf` must be loaded before any PDF is read or written.
+- `anthropic/mcp-builder` (+ relevant reference file) must be loaded before implementing any MCP server.
+- `anthropic/claude-api` must be loaded before any agent writes code that calls Claude.
+- `codex/security-best-practices` and `codex/security-threat-model` must both be loaded at the `qa_validator` gate.
+- `codex/jupyter-notebook` is shared between `mechanic_analyst` and `mc_simulator`; both use `experiment` mode notebooks.
+- External Tier 2 skills (`webapp-testing`, `playwright`, `playwright-interactive`, `screenshot`, `doc-coauthoring`, `frontend-design`) are loaded only when their owning agent is active.
+- `codex/yeet` and `codex/gh-fix-ci` are post-pipeline; they do not block any upstream stage.
 
 ---
 
