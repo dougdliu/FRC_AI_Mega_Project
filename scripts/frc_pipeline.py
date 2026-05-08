@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,25 @@ AGENT_SKILLS = {
     "strategy_architect": ["anthropic/doc-coauthoring", "karpathy/claude"],
     "qa_validator": ["codex/security-best-practices", "codex/security-threat-model", "karpathy/claude"],
 }
+
+SIM_FEEDBACK_ALLOWED_SOURCES = {"human_playtest", "rl_self_play", "hybrid"}
+SIM_FEEDBACK_ALLOWED_CONFIDENCE = {"low", "medium", "high"}
+SIM_FEEDBACK_ROBOT_PARAM_BOUNDS = {
+    "drive_free_speed_fps": (0.0, 30.0),
+    "drive_time_to_full_speed_s": (0.0, 10.0),
+    "intake_rate_pieces_per_s": (0.0, 30.0),
+    "storage_capacity_assumed": (0.0, 100.0),
+    "score_rate_pieces_per_s": (0.0, 30.0),
+}
+SIM_FEEDBACK_KPI_BOUNDS = {
+    "match_points": (0.0, 500.0),
+    "value_per_second": (0.0, 10.0),
+    "foul_points_conceded": (0.0, 200.0),
+    "tower_success_rate": (0.0, 1.0),
+    "defense_sensitivity": (0.0, 1.0),
+    "alliance_dependency_score": (0.0, 1.0),
+}
+SIM_FEEDBACK_UPDATE_DELTA_BOUNDS = (-100.0, 100.0)
 
 
 def utc_now() -> str:
@@ -520,7 +540,226 @@ def build_mechanics(year: str, rules: dict[str, Any]) -> dict[str, Any]:
     return mechanics
 
 
-def build_insight_packet(year: str, rules: dict[str, Any], mechanics: dict[str, Any]) -> dict[str, Any]:
+def build_sim_arch_feedback_template(year: str) -> dict[str, Any]:
+    return {
+        "run_id": "template",
+        "generated_at": utc_now(),
+        "source": "human_playtest",
+        "robot_params": {
+            "drive_free_speed_fps": 18.0,
+            "drive_time_to_full_speed_s": 2.5,
+            "intake_rate_pieces_per_s": 4.0,
+            "storage_capacity_assumed": 8,
+            "score_rate_pieces_per_s": 4.0,
+            "climb_profile": "level_2_reliable",
+        },
+        "kpis": {
+            "match_points": 0.0,
+            "value_per_second": 0.0,
+            "foul_points_conceded": 0.0,
+            "tower_success_rate": 0.0,
+            "defense_sensitivity": 0.0,
+            "alliance_dependency_score": 0.0,
+        },
+        "recommended_strategy_updates": [
+            {
+                "strategy_name": "Safe RP Foundation",
+                "delta_expected_value": 0.0,
+                "reason": "Replace with measured delta from simulation runs.",
+                "confidence": "low",
+            }
+        ],
+        "confidence": "low",
+        "notes": [
+            "Template only. Replace with real outputs from human playtests and/or RL self-play before ingestion.",
+            f"Place this file at artifacts/{year}/sim_arch_feedback.json",
+            "Allowed confidence values: low, medium, high.",
+            "KPI bounds: match_points 0-500, value_per_second 0-10, foul_points_conceded 0-200, tower_success_rate 0-1, defense_sensitivity 0-1, alliance_dependency_score 0-1.",
+        ],
+    }
+
+
+def _validate_bounded_number(
+    payload: dict[str, Any],
+    field: str,
+    bounds: tuple[float, float],
+    errors: list[str],
+) -> None:
+    value = payload.get(field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        errors.append(f"{field} must be a finite numeric value")
+        return
+    low, high = bounds
+    if float(value) < low or float(value) > high:
+        errors.append(f"{field} must be between {low} and {high}; received {value}")
+
+
+def validate_sim_arch_feedback(data: dict[str, Any]) -> tuple[bool, list[str]]:
+    required_keys = {
+        "run_id",
+        "generated_at",
+        "source",
+        "robot_params",
+        "kpis",
+        "recommended_strategy_updates",
+        "confidence",
+    }
+    errors: list[str] = []
+    missing = sorted(required_keys.difference(data.keys()))
+    for key in missing:
+        errors.append(f"missing required key: {key}")
+
+    run_id = data.get("run_id")
+    if "run_id" in data and (not isinstance(run_id, str) or not run_id.strip()):
+        errors.append("run_id must be a non-empty string")
+
+    generated_at = data.get("generated_at")
+    if "generated_at" in data and (not isinstance(generated_at, str) or not generated_at.strip()):
+        errors.append("generated_at must be a non-empty string")
+
+    source = data.get("source")
+    if "source" in data and source not in SIM_FEEDBACK_ALLOWED_SOURCES:
+        errors.append(
+            "source must be one of: " + ", ".join(sorted(SIM_FEEDBACK_ALLOWED_SOURCES))
+        )
+
+    confidence = data.get("confidence")
+    if "confidence" in data and confidence not in SIM_FEEDBACK_ALLOWED_CONFIDENCE:
+        errors.append(
+            "confidence must be one of: " + ", ".join(sorted(SIM_FEEDBACK_ALLOWED_CONFIDENCE))
+        )
+
+    robot_params = data.get("robot_params")
+    if "robot_params" in data:
+        if not isinstance(robot_params, dict):
+            errors.append("robot_params must be an object")
+        else:
+            for field, bounds in SIM_FEEDBACK_ROBOT_PARAM_BOUNDS.items():
+                if field not in robot_params:
+                    errors.append(f"robot_params missing required field: {field}")
+                else:
+                    _validate_bounded_number(robot_params, field, bounds, errors)
+            climb_profile = robot_params.get("climb_profile")
+            if not isinstance(climb_profile, str) or not climb_profile.strip():
+                errors.append("robot_params.climb_profile must be a non-empty string")
+
+    kpis = data.get("kpis")
+    if "kpis" in data:
+        if not isinstance(kpis, dict):
+            errors.append("kpis must be an object")
+        else:
+            for field, bounds in SIM_FEEDBACK_KPI_BOUNDS.items():
+                if field not in kpis:
+                    errors.append(f"kpis missing required field: {field}")
+                else:
+                    _validate_bounded_number(kpis, field, bounds, errors)
+
+    updates = data.get("recommended_strategy_updates")
+    if "recommended_strategy_updates" in data:
+        if not isinstance(updates, list) or not updates:
+            errors.append("recommended_strategy_updates must be a non-empty list")
+        else:
+            for index, update in enumerate(updates, start=1):
+                if not isinstance(update, dict):
+                    errors.append(f"recommended_strategy_updates[{index}] must be an object")
+                    continue
+                strategy_name = update.get("strategy_name")
+                if not isinstance(strategy_name, str) or not strategy_name.strip():
+                    errors.append(f"recommended_strategy_updates[{index}].strategy_name must be a non-empty string")
+                reason = update.get("reason")
+                if not isinstance(reason, str) or not reason.strip():
+                    errors.append(f"recommended_strategy_updates[{index}].reason must be a non-empty string")
+                update_confidence = update.get("confidence")
+                if update_confidence not in SIM_FEEDBACK_ALLOWED_CONFIDENCE:
+                    errors.append(
+                        f"recommended_strategy_updates[{index}].confidence must be one of: "
+                        + ", ".join(sorted(SIM_FEEDBACK_ALLOWED_CONFIDENCE))
+                    )
+                delta = update.get("delta_expected_value")
+                if isinstance(delta, bool) or not isinstance(delta, (int, float)) or not math.isfinite(float(delta)):
+                    errors.append(f"recommended_strategy_updates[{index}].delta_expected_value must be a finite numeric value")
+                else:
+                    low, high = SIM_FEEDBACK_UPDATE_DELTA_BOUNDS
+                    if float(delta) < low or float(delta) > high:
+                        errors.append(
+                            f"recommended_strategy_updates[{index}].delta_expected_value must be between {low} and {high}; received {delta}"
+                        )
+
+    return (len(errors) == 0, errors)
+
+
+def load_sim_arch_feedback(path: Path) -> tuple[dict[str, Any] | None, str, list[str]]:
+    if not path.exists():
+        return None, "missing", []
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (json.JSONDecodeError, OSError):
+        return None, "invalid_json", ["sim_arch_feedback.json could not be parsed as valid JSON"]
+    if not isinstance(data, dict):
+        return None, "invalid_type", ["sim_arch_feedback.json root must be an object"]
+    valid, errors = validate_sim_arch_feedback(data)
+    if not valid:
+        return None, "invalid_contract", errors
+    if str(data.get("run_id", "")).strip().lower() == "template":
+        return None, "template", []
+    return data, "loaded", []
+
+
+def apply_sim_feedback_to_candidates(
+    candidates: list[dict[str, Any]],
+    sim_feedback: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not sim_feedback:
+        return candidates, {"status": "not_applied", "updates_used": 0}
+
+    updates = sim_feedback.get("recommended_strategy_updates", [])
+    if not isinstance(updates, list):
+        return candidates, {"status": "not_applied", "updates_used": 0}
+
+    delta_by_name: dict[str, float] = {}
+    used_updates = 0
+    for update in updates:
+        if not isinstance(update, dict):
+            continue
+        name = str(update.get("strategy_name", "")).strip()
+        if not name:
+            continue
+        try:
+            delta = float(update.get("delta_expected_value", 0.0))
+        except (TypeError, ValueError):
+            delta = 0.0
+        delta_by_name[name] = delta
+
+    reranked: list[dict[str, Any]] = []
+    for candidate in candidates:
+        name = str(candidate.get("name", ""))
+        delta = delta_by_name.get(name, 0.0)
+        if name in delta_by_name:
+            used_updates += 1
+        updated = dict(candidate)
+        updated["sim_feedback_delta_expected_value"] = delta
+        reranked.append(updated)
+
+    reranked.sort(
+        key=lambda item: (item.get("sim_feedback_delta_expected_value", 0.0), item.get("name", "")),
+        reverse=True,
+    )
+    summary = {
+        "status": "applied",
+        "source": sim_feedback.get("source", "unknown"),
+        "run_id": sim_feedback.get("run_id", "unknown"),
+        "updates_used": used_updates,
+    }
+    return reranked, summary
+
+
+def build_insight_packet(
+    year: str,
+    rules: dict[str, Any],
+    mechanics: dict[str, Any],
+    sim_feedback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     metadata = base_metadata(
         "plan",
         year,
@@ -528,10 +767,46 @@ def build_insight_packet(year: str, rules: dict[str, Any], mechanics: dict[str, 
         rules["metadata"]["manual_version"],
         "strategy_architect",
     )
+    candidates = [
+        {
+            "name": "Safe RP Foundation",
+            "assumptions": ["Prioritize reliable active-HUB FUEL scoring", "At least two alliance robots contribute TOWER points"],
+            "expected_value": "Balanced ranking-point path with lower penalty exposure.",
+            "key_risks": ["ENERGIZED threshold still demands high fuel throughput", "Traversal RP requires partner coordination"],
+            "citations": rules["ranking_points"][0]["citations"] + rules["ranking_points"][2]["citations"],
+        },
+        {
+            "name": "Shift-Aware Fuel Pressure",
+            "assumptions": ["Robot can collect quickly during inactive HUB windows", "Driver station receives and displays FMS game data clearly"],
+            "expected_value": "Maximizes active-HUB scoring opportunities while using inactive periods for collection and defense.",
+            "key_risks": ["Incorrect HUB-state handling wastes cycles", "Defense can create foul exposure near scoring lanes"],
+            "citations": rules["hub_status"]["citations"],
+        },
+        {
+            "name": "Tower Anchor Plus Fuel Support",
+            "assumptions": ["Robot can reliably reach LEVEL 3 in TELEOP", "Auto LEVEL 1 is available without sacrificing too much FUEL"],
+            "expected_value": "Creates a strong TRAVERSAL RP base and playoff floor while partners focus on fuel.",
+            "key_risks": ["Solo traversal threshold is not reachable under extracted point values", "Endgame climb consumes late active-HUB scoring time"],
+            "citations": rules["scoring"][3]["citations"] + rules["scoring"][6]["citations"] + rules["ranking_points"][2]["citations"],
+        },
+    ]
+    reranked_candidates, feedback_ingestion = apply_sim_feedback_to_candidates(candidates, sim_feedback)
+
+    warnings = ["Strategy values are hypotheses until cycle-time simulation and drive-team constraints are supplied."]
+    if feedback_ingestion.get("status") == "applied":
+        warnings.append(
+            f"Applied sim_arch_feedback reranking from run_id={feedback_ingestion.get('run_id')} with {feedback_ingestion.get('updates_used', 0)} mapped updates."
+        )
+
     return {
         "success": True,
-        "artifact_paths": [f"artifacts/{year}/manual_insight_packet.json", f"artifacts/{year}/strategy_hypotheses.md", f"artifacts/{year}/manual_insight_analysis.md"],
-        "warnings": ["Strategy values are hypotheses until cycle-time simulation and drive-team constraints are supplied."],
+        "artifact_paths": [
+            f"artifacts/{year}/manual_insight_packet.json",
+            f"artifacts/{year}/strategy_hypotheses.md",
+            f"artifacts/{year}/manual_insight_analysis.md",
+            f"artifacts/{year}/sim_arch_feedback.json",
+        ],
+        "warnings": warnings,
         "metadata": metadata,
         "phase_model": {
             "auto": {"duration_s": 20, "highest_leverage": ["preload fuel scoring", "LEVEL 1 tower attempt when reliable"], "citations": rules["timing"]["citations"]},
@@ -572,34 +847,54 @@ def build_insight_packet(year: str, rules: dict[str, Any], mechanics: dict[str, 
                 "citations": rules["ranking_points"][2]["citations"] + rules["scoring"][3]["citations"] + rules["scoring"][6]["citations"],
             },
         ],
-        "strategy_candidates": [
-            {
-                "name": "Safe RP Foundation",
-                "assumptions": ["Prioritize reliable active-HUB FUEL scoring", "At least two alliance robots contribute TOWER points"],
-                "expected_value": "Balanced ranking-point path with lower penalty exposure.",
-                "key_risks": ["ENERGIZED threshold still demands high fuel throughput", "Traversal RP requires partner coordination"],
-                "citations": rules["ranking_points"][0]["citations"] + rules["ranking_points"][2]["citations"],
-            },
-            {
-                "name": "Shift-Aware Fuel Pressure",
-                "assumptions": ["Robot can collect quickly during inactive HUB windows", "Driver station receives and displays FMS game data clearly"],
-                "expected_value": "Maximizes active-HUB scoring opportunities while using inactive periods for collection and defense.",
-                "key_risks": ["Incorrect HUB-state handling wastes cycles", "Defense can create foul exposure near scoring lanes"],
-                "citations": rules["hub_status"]["citations"],
-            },
-            {
-                "name": "Tower Anchor Plus Fuel Support",
-                "assumptions": ["Robot can reliably reach LEVEL 3 in TELEOP", "Auto LEVEL 1 is available without sacrificing too much FUEL"],
-                "expected_value": "Creates a strong TRAVERSAL RP base and playoff floor while partners focus on fuel.",
-                "key_risks": ["Solo traversal threshold is not reachable under extracted point values", "Endgame climb consumes late active-HUB scoring time"],
-                "citations": rules["scoring"][3]["citations"] + rules["scoring"][6]["citations"] + rules["ranking_points"][2]["citations"],
-            },
-        ],
+        "strategy_candidates": reranked_candidates,
         "open_questions": [
             "Confirm whether later Team Updates modify District Championship or FIRST Championship BONUS RP thresholds.",
             "Add robot design assumptions before assigning value_per_second or risk_weighted_value.",
             "Audit table extraction before promoting rules.json to validated status.",
         ],
+        "architecture_optimization": {
+            "intent": "Use 2D simulation to compare robot architectures and feed best-performing parameter sets back into strategy analysis.",
+            "human_play_loop": {
+                "enabled": True,
+                "description": "Humans play 3v3 matches with configurable robot parameters to surface practical architecture tradeoffs.",
+                "required_metrics": [
+                    "match_points",
+                    "foul_points_conceded",
+                    "active_hub_accuracy",
+                    "tower_success_rate",
+                    "cycle_time_p50_s",
+                    "cycle_time_p90_s",
+                ],
+            },
+            "rl_self_play_loop": {
+                "enabled": True,
+                "description": "Six-agent 3v3 self-play with randomized architecture parameters and policy training to identify robust high-value designs.",
+                "recommendation": "Start with PPO or SAC in a simplified 2D environment, then increase realism after baseline convergence.",
+                "training_contract": {
+                    "episodes_min": 10000,
+                    "evaluation_matches_min": 1000,
+                    "seed_count_min": 5,
+                    "output_tables": [
+                        "architecture_leaderboard",
+                        "pareto_front_value_vs_risk",
+                        "sensitivity_by_defense_pressure",
+                    ],
+                },
+            },
+            "feedback_contract": {
+                "target_artifact": f"artifacts/{year}/sim_arch_feedback.json",
+                "required_fields": [
+                    "run_id",
+                    "source",
+                    "robot_params",
+                    "kpis",
+                    "recommended_strategy_updates",
+                    "confidence",
+                ],
+            },
+            "feedback_ingestion": feedback_ingestion,
+        },
         "citations": rules["citations"] + mechanics["citations"],
     }
 
@@ -1082,6 +1377,31 @@ def build_insight_analysis_md(
         "primary scoring before committing."
     )
 
+    h(4, "Simulation-Driven Architecture Search Loop")
+    p(
+        "The 2D simulator is intended for architecture selection, not only visualization. Two complementary loops are"
+        " supported: (1) human-driven multiplayer playtests and (2) RL-based 3v3 self-play. Both loops feed a shared"
+        " architecture-feedback artifact that updates this analysis in future iterations."
+    )
+    L.append("| Loop | Goal | Minimum Output |")
+    L.append("|------|------|----------------|")
+    L.append("| Human playtesting (TideSim-style) | Discover practical driver and mechanism tradeoffs | Parameter set + match KPIs + qualitative notes |")
+    L.append("| RL 3v3 self-play | Search large architecture space and estimate robust optimal regions | Architecture leaderboard + sensitivity results + confidence bands |")
+    sep()
+    p(
+        "Feedback artifact contract: `sim_arch_feedback.json` should include run_id, source (human or rl),"
+        " robot parameter vector, KPI bundle (EPS, foul risk, climb success, defense sensitivity), and"
+        " recommended strategy deltas for the next manual-insight generation pass."
+    )
+    feedback_ingestion = packet.get("architecture_optimization", {}).get("feedback_ingestion", {})
+    if feedback_ingestion:
+        status = feedback_ingestion.get("status", "unknown")
+        run_id = feedback_ingestion.get("run_id", "n/a")
+        updates_used = feedback_ingestion.get("updates_used", 0)
+        p(
+            f"Feedback ingestion status: **{status}** (run_id: {run_id}, mapped strategy updates: {updates_used})."
+        )
+
     h(3, "Scoring Insight Rubric (per skill definition)")
     L.append("| Action | Value/Second | Risk-Weighted | Alliance Dependency | Defense Sensitivity | Complexity |")
     L.append("|--------|-------------|---------------|---------------------|---------------------|-----------|")
@@ -1454,12 +1774,20 @@ def build_game_spec(year: str, rules: dict[str, Any], mechanics: dict[str, Any],
     }
 
 
-def validate_outputs(year: str, rules: dict[str, Any], mechanics: dict[str, Any], packet: dict[str, Any]) -> dict[str, Any]:
+def validate_outputs(
+    year: str,
+    rules: dict[str, Any],
+    mechanics: dict[str, Any],
+    packet: dict[str, Any],
+    sim_feedback_status: str,
+    sim_feedback_issues: list[str],
+) -> dict[str, Any]:
     required_rules_keys = {"sections", "scoring", "penalties", "field", "timing", "equipment_limits", "citations"}
     missing_rules = sorted(required_rules_keys.difference(rules))
     scoring_with_citations = all(item.get("citations") for item in rules.get("scoring", []))
     transitions_with_citations = all(item.get("citations") for item in mechanics.get("transitions", []))
     strategy_with_citations = all(item.get("citations") for item in packet.get("strategy_candidates", []))
+    architecture_feedback_gate = "pass" if sim_feedback_status == "loaded" else "skip"
     defects = []
     if missing_rules:
         defects.append({"severity": "critical", "description": f"rules.json missing keys: {', '.join(missing_rules)}", "recommended_action": "Fix extractor output contract."})
@@ -1469,6 +1797,16 @@ def validate_outputs(year: str, rules: dict[str, Any], mechanics: dict[str, Any]
         defects.append({"severity": "major", "description": "At least one mechanics transition lacks citations.", "recommended_action": "Map every transition to source rules."})
     if not strategy_with_citations:
         defects.append({"severity": "major", "description": "At least one strategy candidate lacks citations.", "recommended_action": "Map every strategic claim to extracted manual citations."})
+    if sim_feedback_status in {"invalid_json", "invalid_type", "invalid_contract"}:
+        architecture_feedback_gate = "fail"
+        for issue in sim_feedback_issues:
+            defects.append(
+                {
+                    "severity": "critical",
+                    "description": f"sim_arch_feedback validation error: {issue}",
+                    "recommended_action": f"Fix artifacts/{year}/sim_arch_feedback.json to satisfy enum and numeric bound requirements before rerunning the pipeline.",
+                }
+            )
     defects.append(
         {
             "severity": "major",
@@ -1476,10 +1814,17 @@ def validate_outputs(year: str, rules: dict[str, Any], mechanics: dict[str, Any]
             "recommended_action": "Run qa_validator review against the manual table of contents and scoring tables before release.",
         }
     )
-    release_decision = "blocked_until_recall_audit" if any(defect["severity"] in {"critical", "major"} for defect in defects) else "release_candidate"
+    has_critical = any(defect["severity"] == "critical" for defect in defects)
+    has_major = any(defect["severity"] == "major" for defect in defects)
+    if has_critical:
+        release_decision = "blocked_due_to_validation_errors"
+    elif has_major:
+        release_decision = "blocked_until_recall_audit"
+    else:
+        release_decision = "release_candidate"
     return {
         "run_id": f"{year}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
-        "success": not any(defect["severity"] == "critical" for defect in defects),
+        "success": not has_critical,
         "artifact_paths": [f"artifacts/{year}/validation_report.json"],
         "warnings": ["This is an initial bootstrap validation, not a final qa_validator release gate."],
         "metadata": base_metadata(
@@ -1494,8 +1839,11 @@ def validate_outputs(year: str, rules: dict[str, Any], mechanics: dict[str, Any]
             "scoring_citations": "pass" if scoring_with_citations else "fail",
             "mechanics_citations": "pass" if transitions_with_citations else "fail",
             "strategy_citations": "pass" if strategy_with_citations else "fail",
+            "architecture_feedback_contract": architecture_feedback_gate,
             "release_recall_audit": "fail",
         },
+        "architecture_feedback_status": sim_feedback_status,
+        "architecture_feedback_issues": sim_feedback_issues,
         "defects": defects,
         "recommended_actions": [
             "Review extracted Section 6 tables and Section 7 game rules before using outputs for robot design decisions.",
@@ -1580,6 +1928,7 @@ def run_pipeline(root: Path, year: str, manual_path: Path) -> dict[str, Any]:
     packet_path = artifacts_dir / "manual_insight_packet.json"
     strategy_path = artifacts_dir / "strategy_hypotheses.md"
     insight_md_path = artifacts_dir / "manual_insight_analysis.md"
+    sim_feedback_path = artifacts_dir / "sim_arch_feedback.json"
     game_spec_path = root / "context" / "game_spec.json"
     validation_path = artifacts_dir / "validation_report.json"
     state_path = artifacts_dir / "orchestration_state.json"
@@ -1589,19 +1938,39 @@ def run_pipeline(root: Path, year: str, manual_path: Path) -> dict[str, Any]:
     write_json(rules_path, rules)
     mechanics = build_mechanics(year, rules)
     write_json(mechanics_path, mechanics)
-    packet = build_insight_packet(year, rules, mechanics)
+    sim_feedback, feedback_status, feedback_missing_keys = load_sim_arch_feedback(sim_feedback_path)
+    if feedback_status == "missing":
+        write_json(sim_feedback_path, build_sim_arch_feedback_template(year))
+        feedback_status = "template_created"
+    packet = build_insight_packet(year, rules, mechanics, sim_feedback)
+    if feedback_status not in {"loaded", "template", "template_created"}:
+        packet["warnings"].append(f"sim_arch_feedback ingestion status: {feedback_status}.")
+    if feedback_missing_keys:
+        packet["warnings"].append(
+            "sim_arch_feedback validation issues: " + "; ".join(feedback_missing_keys)
+        )
     write_json(packet_path, packet)
     strategy_path.write_text(build_strategy_markdown(packet), encoding="utf-8")
     insight_md_path.write_text(build_insight_analysis_md(packet, rules, mechanics), encoding="utf-8")
     game_spec = build_game_spec(year, rules, mechanics, packet)
     write_json(game_spec_path, game_spec)
-    validation = validate_outputs(year, rules, mechanics, packet)
+    validation = validate_outputs(year, rules, mechanics, packet, feedback_status, feedback_missing_keys)
     write_json(validation_path, validation)
     manifest = write_manifest(
         root,
         year,
         manual_path,
-        [raw_text_path, rules_path, mechanics_path, packet_path, strategy_path, insight_md_path, game_spec_path, validation_path],
+        [
+            raw_text_path,
+            rules_path,
+            mechanics_path,
+            packet_path,
+            strategy_path,
+            insight_md_path,
+            sim_feedback_path,
+            game_spec_path,
+            validation_path,
+        ],
         validation,
     )
     append_run_history(root, year, validation)

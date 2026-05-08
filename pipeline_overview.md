@@ -6,16 +6,18 @@
    - `robot_codegen` → WPILib project
    - `power_engineer` → Power app + budget
    - `scout_dev` → Scouting app
-   - `sim_engineer` → 2D sim + params
+   - `sim_engineer` → 2D sim game + params + architecture feedback (`sim_arch_feedback.json`)
    - `mc_simulator` → Monte Carlo reports
 5. **Integrate:** `advscope_integrator` → Logs + config
 6. **Validate:** `qa_validator` → Compliance report
 7. **Iterate:** Logs → `skill: Iterative Log-Assisted Dev` → Code patches → Rebuild
+8. **Architecture Search Loop:** Human multiplayer playtests and RL 3v3 self-play in the 2D sim feed `sim_arch_feedback.json` back into manual insight analysis.
 
 ## Success Criteria (Release Gate)
 - Rule extraction recall >= 98% for required sections (objectives, timing, scoring, penalties, field).
 - Every downstream recommendation includes at least one source citation (`section_id`, `page`).
 - Simulation and Monte Carlo tools produce reproducible outputs with pinned random seeds.
+- 2D sim architecture search outputs include reproducible KPI bundles and top-architecture rankings from both human and RL runs.
 - Validation report has zero critical rule compliance failures.
 
 ## Runtime Targets
@@ -26,6 +28,7 @@
 ## Canonical Artifacts
 - `/context/game_spec.json` is the single source of truth for shared game semantics.
 - `/artifacts/{game_year}/manifest.json` lists all generated artifacts, hashes, and generator versions.
+- `/artifacts/{game_year}/sim_arch_feedback.json` stores architecture sweep outcomes and strategy update recommendations.
 - `/artifacts/{game_year}/validation_report.json` is required for release decisions.
 
 ## Operational Risks and Mitigation

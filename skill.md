@@ -20,10 +20,12 @@
 ## Skill: Consolidated FRC Manual Insight Analysis
 - **Intent:** Use a single worksheet-driven framework (derived from Team 2791/6328 and FIRST kickoff worksheets) to convert manual text into actionable game insights. Operates as the strategic reasoning layer above PDF Rule Extraction — prefer consuming `rules.json` when available to avoid redundant PDF parsing; fall back to raw PDF only when `rules.json` has not yet been produced.
 - **Input:** `rules.json` (preferred, from PDF Rule Extraction) or game manual PDF (fallback). Team Updates and Q&A clarifications as supplemental inputs. Optional historical game analogs.
+- **Simulation Feedback Input (optional but preferred after first run):** `sim_arch_feedback.json` generated from 2D sim human playtests and/or RL 3v3 self-play architecture sweeps.
 - **Output:**
 	- `manual_insight_packet.json`
 	- `strategy_hypotheses.md`
 	- `manual_insight_analysis.md` — comprehensive human-readable report covering all 10 primary sections, the six Question Matrix answers with citations, and open Q&A items
+	- `sim_arch_feedback.json` — architecture search evidence bundle (human-play and/or RL self-play) consumed on subsequent insight passes
 	- `risk_register.json`
 	- `citation_index.json`
 - **Primary Sections (in required order):**
@@ -60,6 +62,13 @@
 	- Estimate geometric upper-bound storage capacity from game-piece dimensions plus robot perimeter/height envelope, then apply a `10-20%` volume cut for chassis/mechanism occupancy.
 	- Include current swerve metagame assumptions: free-speed envelope `~13-22 ft/s` and time-to-full-speed envelope `1-5 s`.
 	- Include an endgame decision table comparing endgame action EPS vs continuing primary-objective EPS, including break-even time.
+	- Include a simulation-driven architecture search subsection describing how human playtest and RL self-play results update cycle assumptions and strategy rankings.
+- **Architecture Search Requirements (mandatory):**
+	- The 2D sim must support parameterized robot archetypes for drive, intake, storage, scoring, and climb behavior.
+	- Human play mode must support multiplayer 3v3 matches with architecture parameter presets and per-match KPI logging.
+	- RL mode must support six-agent 3v3 self-play with randomized architecture parameters and seed-controlled reproducibility.
+	- Architecture evaluations must report at least: `match_points`, `value_per_second`, `foul_points_conceded`, `tower_success_rate`, `defense_sensitivity`, `alliance_dependency_score`.
+	- Feedback outputs must include both top-performing architecture sets and failure modes (high-variance or foul-prone designs).
 - **Output Contract (minimum keys):**
 	- `metadata`: `game_year`, `manual_version`, `schema_version`, `generated_at`
 	- `phase_model`: `auto`, `teleop`, `endgame`
@@ -68,11 +77,17 @@
 	- `rp_model[]`: `rp_name`, `requirements`, `solo_feasibility`, `alliance_dependencies`
 	- `strategy_candidates[]`: `name`, `assumptions`, `expected_value`, `key_risks`
 	- `open_questions[]`: unresolved ambiguities requiring Q&A follow-up
+	- `architecture_optimization`: `human_play_loop`, `rl_self_play_loop`, `feedback_contract`
 - **Validation:**
 	- No section may be left empty.
 	- Every strategic claim must map to at least one citation.
 	- Contradictions across rule sections must be flagged in `open_questions`.
 	- At least three distinct strategy candidates must be generated (safe/balanced/high-upside).
+	- If `sim_arch_feedback.json` is present and non-template, it must pass contract validation before its outputs can rerank strategy candidates.
+	- Valid `source` values: `human_playtest`, `rl_self_play`, `hybrid`.
+	- Valid `confidence` values: `low`, `medium`, `high`.
+	- KPI ranges: `match_points` 0-500, `value_per_second` 0-10, `foul_points_conceded` 0-200, `tower_success_rate` 0-1, `defense_sensitivity` 0-1, `alliance_dependency_score` 0-1.
+	- Robot-parameter ranges: `drive_free_speed_fps` 0-30, `drive_time_to_full_speed_s` 0-10, `intake_rate_pieces_per_s` 0-30, `storage_capacity_assumed` 0-100, `score_rate_pieces_per_s` 0-30.
 - **Prompt Template:** `Analyze the FRC game manual using the consolidated kickoff worksheet framework. Extract rule-grounded facts first, then derive strategy insights for auto, teleop, endgame, ranking, and playoff outcomes. Return the output contract fields exactly, include citations for every non-trivial claim, and flag ambiguities for Q&A follow-up.`
 - **Reference Basis:**
 	- Team 6328 kickoff worksheet (Chief Delphi PDF)
@@ -131,17 +146,21 @@
 
 ## Skill: 2D Physics Simulation
 - **Input:** Robot params (size, speed, physics, intake width, scoring type)
-- **Output:** Interactive canvas sim + `sim_params.json`
+- **Goal:** Create a lightweight, TideSim-style top-down multiplayer game for early-season robot architecture decisions.
+- **Output:** Interactive canvas sim + `sim_params.json` + `sim_arch_feedback.json`
 - **Tools:** `pygame`/`p5.js`, `box2d`, kinematics solver
-- **Validation:** Collision detection accurate, speed/acceleration match specs, parameter sliders update in real-time.
-- **Prompt Template:** `Create a 2D sim where robots match {size, speed, intake_width}. Implement scoring, collisions, and field boundaries. Output parameter JSON and interactive canvas.`
+- **Modes (required):**
+	- Human playtest mode: 3v3 multiplayer with configurable architecture presets and KPI capture.
+	- RL self-play mode: six controlled agents in repeated 3v3 matches for architecture search.
+- **Validation:** Collision detection accurate, speed/acceleration match specs, parameter sliders update in real-time, KPI logs deterministic under fixed seeds.
+- **Prompt Template:** `Create a 2D top-down 3v3 simulation game where robots match {size, speed, intake_width, storage, shooter_rate, climb_profile}. Support both human multiplayer playtests and RL self-play sweeps, then export sim_arch_feedback.json with architecture rankings and KPI summaries.`
 
 ## Skill: Monte Carlo Strategy Simulation
 - **Input:** 3v3 alliance configs, robot params, game rules
-- **Output:** Win-rate heatmap, strategy recommendations
+- **Output:** Win-rate heatmap, strategy recommendations, architecture sensitivity report
 - **Tools:** `ray`, `numpy`, `seaborn`
-- **Validation:** 10k+ runs per config, confidence intervals reported, matches FRC alliance dynamics.
-- **Prompt Template:** `Run 3v3 Monte Carlo simulations for {alliance_compositions}. Sweep robot parameters. Output win-rate heatmaps and top strategies.`
+- **Validation:** 10k+ runs per config, confidence intervals reported, matches FRC alliance dynamics, and includes cross-check against 2D sim architecture rankings.
+- **Prompt Template:** `Run 3v3 Monte Carlo simulations for {alliance_compositions}. Sweep robot architecture parameters, compare outcomes with 2D sim feedback, and output win-rate heatmaps plus architecture sensitivity findings.`
 
 ## Skill: AdvantageScope Log Integration
 - **Input:** WPILib code, simulation outputs
@@ -211,6 +230,7 @@
 - **PDF Rule Extraction runs first** and its `rules.json` is the shared input to both Consolidated FRC Manual Insight Analysis and Game Mechanics Modeling. Neither downstream skill should re-parse the raw PDF if `rules.json` exists.
 - **Consolidated FRC Manual Insight Analysis** and **Game Mechanics Modeling** are parallel consumers of `rules.json` — they run concurrently after extraction completes. Consolidated produces strategic outputs (human-readable); Game Mechanics produces simulation inputs (machine-readable).
 - `manual_insight_packet.json` (from Consolidated) may be passed to Game Mechanics Modeling as a cross-reference to catch modeling gaps, but is not required.
+- `sim_arch_feedback.json` (from 2D Physics Simulation and/or RL self-play) should be fed back into Consolidated FRC Manual Insight Analysis on subsequent runs to update cycle assumptions and strategy candidate rankings.
 - `anthropic/mcp-builder` (+ relevant reference file) must be loaded before implementing any MCP server.
 - `anthropic/claude-api` must be loaded before any agent writes code that calls Claude.
 - `codex/security-best-practices` and `codex/security-threat-model` must both be loaded at the `qa_validator` gate.

@@ -2,6 +2,8 @@
 
 An AI-agent pipeline for FIRST Robotics Competition (FRC) game analysis, robot code generation, scouting, and simulation. Given a game manual PDF, the pipeline extracts rules, models game mechanics, synthesizes strategy, generates WPILib robot code, runs Monte Carlo simulations, and produces a scouting app — all in a single orchestrated run.
 
+The current strategy stack includes a TideSim-style 2D architecture search loop: human 3v3 playtests and RL/self-play sweeps can emit `sim_arch_feedback.json`, and that artifact feeds back into the manual insight analysis to rerank strategy candidates when the contract passes validation.
+
 ---
 
 ## Pipeline Overview
@@ -11,9 +13,11 @@ PDF Manual
     └─> [1] PDF Rule Extraction        → rules.json
             ├─> [2a] Consolidated FRC Manual Insight Analysis  → strategy_hypotheses.md
             │                                                     manual_insight_packet.json
+            │                                                     manual_insight_analysis.md
             └─> [2b] Game Mechanics Modeling                   → mechanics.json
                         ├─> [3] Monte Carlo Strategy Simulation → win-rate heatmaps
                         └─> [3] 2D Physics Simulation           → sim_params.json
+                                                                  sim_arch_feedback.json
 
                         [3] WPILib Robot Code Generation        ← mechanics.json + strategy
                         [3] Power Usage Modeling                ← robot design + motor specs
@@ -22,6 +26,7 @@ PDF Manual
                         [4] AdvantageScope Log Integration      → .csv logs
                         [5] qa_validator gate
                         [6] Iterative Log-Assisted Dev          → code patches
+                        [7] Strategy Feedback Loop              ← sim_arch_feedback.json
 ```
 
 Full runtime target: ≤ 20 minutes (single game manual). Incremental rerun after a rule edit: ≤ 5 minutes.
@@ -38,8 +43,8 @@ Full runtime target: ≤ 20 minutes (single game manual). Incremental rerun afte
 | `robot_codegen` | Generates WPILib 2026 command-based project with vendor deps |
 | `power_engineer` | Models current draw and battery sag → Streamlit dashboard + CSV |
 | `scout_dev` | Builds scouting web/mobile app with SQLite backend and export API |
-| `sim_engineer` | Builds interactive 2D physics simulation canvas |
-| `mc_simulator` | Runs 3v3 Monte Carlo alliance sweeps (10k+ runs) |
+| `sim_engineer` | Builds a TideSim-style 2D simulation game for human and RL architecture search |
+| `mc_simulator` | Runs 3v3 Monte Carlo alliance sweeps (10k+ runs) and architecture sensitivity cross-checks |
 | `advscope_integrator` | Formats WPILib logs for AdvantageScope replay |
 | `qa_validator` | Final release gate: rule compliance, security review, schema checks |
 
@@ -116,13 +121,31 @@ All outputs are versioned under `/artifacts/{game_year}/`:
 | `rules.json` | `pdf_extractor` | `mechanic_analyst`, `strategy_architect` |
 | `mechanics.json` | `mechanic_analyst` | `robot_codegen`, `sim_engineer`, `mc_simulator` |
 | `manual_insight_packet.json` | `strategy_architect` | `robot_codegen`, `mc_simulator` |
+| `manual_insight_analysis.md` | `strategy_architect` | Human review, design discussion, drive strategy |
 | `strategy_hypotheses.md` | `strategy_architect` | `robot_codegen` |
+| `sim_arch_feedback.json` | `sim_engineer`, RL/self-play runs | `strategy_architect`, `mc_simulator`, `qa_validator` |
 | `power_budget.csv` | `power_engineer` | `qa_validator` |
 | `sim_params.json` | `sim_engineer` | `mc_simulator` |
 | `manifest.json` | Orchestrator | Release gate |
 | `validation_report.json` | `qa_validator` | Release decision |
 
 `/context/game_spec.json` is the single shared source of truth for game semantics across all parallel agents. Parallel agents must not write to it directly — all updates go through the orchestrator merge step.
+
+If `sim_arch_feedback.json` is missing, the pipeline bootstrap regenerates a template artifact automatically. If a non-template artifact is present, the pipeline validates allowed enums and numeric bounds before using it to rerank strategy candidates.
+
+## Architecture Feedback Contract
+
+`sim_arch_feedback.json` must contain:
+- `run_id`, `generated_at`, `source`, `robot_params`, `kpis`, `recommended_strategy_updates`, `confidence`
+
+Allowed enums:
+- `source`: `human_playtest`, `rl_self_play`, `hybrid`
+- `confidence`: `low`, `medium`, `high`
+
+Bounded numeric fields:
+- Robot params: `drive_free_speed_fps` 0-30, `drive_time_to_full_speed_s` 0-10, `intake_rate_pieces_per_s` 0-30, `storage_capacity_assumed` 0-100, `score_rate_pieces_per_s` 0-30
+- KPIs: `match_points` 0-500, `value_per_second` 0-10, `foul_points_conceded` 0-200, `tower_success_rate` 0-1, `defense_sensitivity` 0-1, `alliance_dependency_score` 0-1
+- Strategy update delta: `delta_expected_value` -100 to 100
 
 ---
 
@@ -133,6 +156,7 @@ A release requires:
 - Every downstream recommendation includes at least one source citation (`section_id`, `page`)
 - Reproducible simulation outputs with pinned random seeds
 - Zero critical rule compliance failures in `validation_report.json`
+- Invalid non-template `sim_arch_feedback.json` artifacts fail the `architecture_feedback_contract` gate and block release
 - OWASP security review passes for MCP HTTP endpoints, scouting API, and PDF ingest pipeline
 
 ---

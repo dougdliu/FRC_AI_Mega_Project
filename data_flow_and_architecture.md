@@ -4,7 +4,7 @@
 - **Artifacts:** `/artifacts/{game_year}/`
   - `rules.json`, `mechanics.json`, `strategy.md`
   - `wpilib_project/`, `power_app/`, `scouting_app/`
-  - `sim_2d/`, `mc_results/`, `logs/`
+  - `sim_2d/`, `sim_arch_feedback.json`, `mc_results/`, `logs/`
 - **Orchestrator:** LangGraph/CrewAI state machine
 - **Storage:** SQLite for scouting, CSV for logs, JSON for specs
 - **Compute:** Local GPU for sim/MC, CPU for parsing/generation
@@ -25,6 +25,14 @@
 - Sequential stages: ingest, model, plan.
 - Parallel stages: robot codegen, power modeling, scouting app, physics sim, Monte Carlo.
 - Join stage: integration plus validation.
+- Feedback stage: architecture search loop where 2D sim human playtests and RL self-play update insight assumptions.
+
+## Architecture Search Feedback Contract
+- `sim_arch_feedback.json`
+  - Required keys: `run_id`, `source`, `robot_params`, `kpis`, `recommended_strategy_updates`, `confidence`.
+  - `source` must be one of: `human_playtest`, `rl_self_play`, `hybrid`.
+  - `kpis` must include at least: `match_points`, `value_per_second`, `foul_points_conceded`, `tower_success_rate`, `defense_sensitivity`, `alliance_dependency_score`.
+  - Must include reproducibility fields for RL runs: `seed`, `episode_count`, `evaluation_match_count`.
 
 ## Provenance and Reproducibility
 - Every generated artifact must include:
