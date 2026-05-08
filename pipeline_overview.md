@@ -1,5 +1,5 @@
 # FRC AI Development Pipeline
-1. **Ingest:** PDF → `pdf_extractor` → `rules.json`
+1. **Ingest:** game manual PDF + field dimension drawing PDF → `pdf_extractor` → `rules.json` + `field_layout_reference.json` + `apriltag_field_layout.json`
 2. **Model:** `mechanic_analyst` → `mechanics.json`
 3. **Plan:** `strategy_architect` → `strategy.md` + sim parameters
 4. **Build (Parallel):**
@@ -28,6 +28,9 @@
 ## Canonical Artifacts
 - `/context/game_spec.json` is the single source of truth for shared game semantics.
 - `/artifacts/{game_year}/manifest.json` lists all generated artifacts, hashes, and generator versions.
+- `/artifacts/{game_year}/field_layout_reference.json` stores dimension-token references plus blue/red alliance reference frames derived from the drawing PDF.
+- `/artifacts/{game_year}/apriltag_field_layout.json` stores deployable WPILib `AprilTagFieldLayout` JSON with top-level `tags[]` and `field.{length,width}`.
+- `/artifacts/{game_year}/wpilib_project/src/main/java/frc/robot/FieldConstants.java` centralizes deploy-first AprilTag layout loading and alliance mirroring helpers.
 - `/artifacts/{game_year}/sim_arch_feedback.json` stores architecture sweep outcomes and strategy update recommendations.
 - `/artifacts/{game_year}/validation_report.json` is required for release decisions.
 

@@ -1,8 +1,8 @@
 # System Architecture
-- **Input:** `/inputs/{game_year}.pdf`
+- **Input:** `/inputs/{game_year}GameManual.pdf` (or equivalent year-matched manual PDF) and `/inputs/{game_year}-field-dimension-dwgs.pdf` (or equivalent year-matched field drawing PDF)
 - **Context:** `/context/game_spec.json` (shared state)
 - **Artifacts:** `/artifacts/{game_year}/`
-  - `rules.json`, `mechanics.json`, `strategy.md`
+  - `rules.json`, `field_layout_reference.json`, `apriltag_field_layout.json`, `mechanics.json`, `strategy.md`
   - `wpilib_project/`, `power_app/`, `scouting_app/`
   - `sim_2d/`, `sim_arch_feedback.json`, `mc_results/`, `logs/`
 - **Orchestrator:** LangGraph/CrewAI state machine
@@ -14,6 +14,10 @@
 - `rules.json`
   - Required keys: `sections`, `scoring`, `penalties`, `field`, `timing`.
   - Required citation fields per clause: `section_id`, `page`, `clause_text`.
+- `field_layout_reference.json`
+  - Required keys: `metadata`, `page_count`, `dimension_tokens`, `intended_consumers`, `use_cases`.
+- `apriltag_field_layout.json`
+  - Required keys: `metadata`, `fieldLength`, `fieldWidth`, `tags`.
 - `mechanics.json`
   - Required keys: `states`, `transitions`, `resource_constraints`, `win_conditions`.
   - Each transition must map to one or more rule citations.

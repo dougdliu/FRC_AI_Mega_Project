@@ -22,7 +22,7 @@ MCPs are lightweight, stateless servers that expose tools, resources, and prompt
 ### 1. `frc-rulebook-mcp`
 **Purpose:** Parse game manuals, extract clauses, enforce FRC compliance.  
 **Tools:**
-- `extract_rules(pdf_path: string) → {sections: [{id, title, text, constraints}], field: {dims, zones}, scoring: [{type, points, conditions}]}`
+- `extract_rules(manual_pdf_path: string, field_drawing_pdf_path: string) → {sections: [{id, title, text, constraints}], field: {dims, zones}, scoring: [{type, points, conditions}], field_layout_reference: object, apriltag_field_layout: object}`
 - `search_rules(query: string) → [{clause_id, section, match_score}]`
 - `validate_clause(clause_id: string, proposed_action: string) → {compliant: bool, reason: string}`
 **Resources:**
@@ -41,6 +41,7 @@ MCPs are lightweight, stateless servers that expose tools, resources, and prompt
 **Resources:**
 - `templates://java/command-based/`
 - `templates://cpp/command-based/`
+- `field://apriltag_field_layout.json`
 - `db://motors.json`
 **Integration:** Powers `robot_codegen`, `qa_validator`
 
@@ -80,6 +81,7 @@ MCPs are lightweight, stateless servers that expose tools, resources, and prompt
 - `export_sim_log() → {csv_path, json_trace}`
 **Resources:**
 - `sim://field_layout.json`
+- `sim://apriltag_field_layout.json`
 - `sim://robots/{id}.json`
 **Integration:** Powers `sim_engineer`, `mc_simulator`
 

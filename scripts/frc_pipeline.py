@@ -23,6 +23,7 @@ AGENT_SKILLS = {
     "pdf_extractor": ["anthropic/pdf", "karpathy/claude"],
     "mechanic_analyst": ["codex/jupyter-notebook", "karpathy/claude"],
     "strategy_architect": ["anthropic/doc-coauthoring", "karpathy/claude"],
+    "robot_codegen": ["anthropic/claude-api", "karpathy/claude"],
     "qa_validator": ["codex/security-best-practices", "codex/security-threat-model", "karpathy/claude"],
 }
 
@@ -119,12 +120,63 @@ def extract_pdf_pages(manual_path: Path) -> list[dict[str, Any]]:
     return pages
 
 
+def resolve_input_path(root: Path, year: str, explicit: str | None, role: str) -> Path:
+    if explicit:
+        candidate = Path(explicit)
+        return candidate if candidate.is_absolute() else root / candidate
+
+    if role == "manual":
+        candidates = [
+            root / "inputs" / f"{year}.pdf",
+            root / "inputs" / f"{year}GameManual.pdf",
+            root / "inputs" / f"{year}-game-manual.pdf",
+            root / "inputs" / f"{year}_game_manual.pdf",
+        ]
+    elif role == "field_drawing":
+        candidates = [
+            root / "inputs" / f"{year}-field-dimension-dwgs.pdf",
+            root / "inputs" / f"{year}-field-dimensions.pdf",
+            root / "inputs" / f"{year}_field_dimensions.pdf",
+            root / "inputs" / f"{year}FieldDimensions.pdf",
+        ]
+    else:
+        raise ValueError(f"Unsupported input role: {role}")
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
 def find_manual_version(pages: list[dict[str, Any]]) -> str:
     for page in pages[:10]:
         match = re.search(r"Version:\s*([A-Z0-9]+)", page["text"])
         if match:
             return match.group(1)
     return "unknown"
+
+
+def extract_dimension_tokens(pages: list[dict[str, Any]], max_tokens: int = 80) -> list[dict[str, Any]]:
+    pattern = re.compile(r"\b\d+(?:\.\d+)?\s*(?:in(?:ches)?|ft|mm|cm|m)\b", flags=re.IGNORECASE)
+    seen: set[tuple[int, str]] = set()
+    tokens: list[dict[str, Any]] = []
+    for page in pages:
+        for match in pattern.finditer(page["text"]):
+            value = match.group(0)
+            key = (page["page"], value.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            tokens.append(
+                {
+                    "page": page["page"],
+                    "section_id": page["section_id"],
+                    "value": value,
+                }
+            )
+            if len(tokens) >= max_tokens:
+                return tokens
+    return tokens
 
 
 def find_page(pages: list[dict[str, Any]], page_number: int) -> dict[str, Any]:
@@ -436,6 +488,80 @@ def build_rules(year: str, manual_hash: str, manual_version: str, pages: list[di
         "citations": key_citations,
     }
     return rules
+
+
+def build_field_layout_reference(
+    year: str,
+    manual_hash: str,
+    manual_version: str,
+    field_drawing_hash: str,
+    field_pages: list[dict[str, Any]],
+    rules: dict[str, Any],
+) -> dict[str, Any]:
+    metadata = base_metadata("ingest", year, manual_hash, manual_version, "pdf_extractor")
+    metadata["source_field_drawing_hash"] = field_drawing_hash
+    dims = rules.get("field", {}).get("dimensions", {})
+    field_length = float(dims.get("length_m", 0.0) or 0.0)
+    field_width = float(dims.get("width_m", 0.0) or 0.0)
+    return {
+        "success": True,
+        "artifact_paths": [
+            f"artifacts/{year}/field_layout_reference.json",
+            f"artifacts/{year}/apriltag_field_layout.json",
+        ],
+        "warnings": [
+            "Field drawing dimensions are extracted as reference tokens for sim/codegen/cycle-time analysis; a human audit is still required before final geometry release.",
+            "AprilTag layout JSON is emitted as a pipeline artifact and should be populated from the field drawing before final robot deployment.",
+        ],
+        "metadata": metadata,
+        "page_count": len(field_pages),
+        "field": {
+            "length": field_length,
+            "width": field_width,
+        },
+        "alliance_sides": {
+            "blue": {
+                "origin": {"x": 0.0, "y": 0.0},
+                "driver_station_midpoint": {"x": 0.0, "y": field_width / 2.0},
+                "alliance_wall_normal": {"x": 1.0, "y": 0.0},
+            },
+            "red": {
+                "origin": {"x": field_length, "y": field_width},
+                "driver_station_midpoint": {"x": field_length, "y": field_width / 2.0},
+                "alliance_wall_normal": {"x": -1.0, "y": 0.0},
+            },
+            "coordinate_note": "WPILib field coordinates are blue-alliance-relative; red-side reference points are mirrored across the field center.",
+        },
+        "dimension_tokens": extract_dimension_tokens(field_pages),
+        "intended_consumers": [
+            "mechanic_analyst",
+            "sim_engineer",
+            "mc_simulator",
+            "robot_codegen",
+        ],
+        "use_cases": [
+            "2D field geometry reference",
+            "AprilTagFieldLayout JSON generation",
+            "cycle-time distance and path-length analysis",
+        ],
+    }
+
+
+def build_apriltag_field_layout(
+    year: str,
+    manual_hash: str,
+    manual_version: str,
+    field_drawing_hash: str,
+    rules: dict[str, Any],
+) -> dict[str, Any]:
+    dims = rules.get("field", {}).get("dimensions", {})
+    return {
+        "tags": [],
+        "field": {
+            "length": round(float(dims.get("length_m", 0.0) or 0.0), 3),
+            "width": round(float(dims.get("width_m", 0.0) or 0.0), 3),
+        },
+    }
 
 
 def build_mechanics(year: str, rules: dict[str, Any]) -> dict[str, Any]:
@@ -1771,6 +1897,11 @@ def build_game_spec(year: str, rules: dict[str, Any], mechanics: dict[str, Any],
             "strategy_candidates": packet["strategy_candidates"],
             "open_questions": packet["open_questions"],
         },
+        "field_reference": {
+            "required_inputs": ["game_manual_pdf", "field_dimension_drawing_pdf"],
+            "field_layout_reference_artifact": f"artifacts/{year}/field_layout_reference.json",
+            "apriltag_field_layout_artifact": f"artifacts/{year}/apriltag_field_layout.json",
+        },
     }
 
 
@@ -1862,7 +1993,14 @@ def write_raw_text(path: Path, pages: list[dict[str, Any]]) -> None:
             handle.write("\n\n")
 
 
-def write_manifest(root: Path, year: str, manual_path: Path, paths: list[Path], validation: dict[str, Any]) -> dict[str, Any]:
+def write_manifest(
+    root: Path,
+    year: str,
+    manual_path: Path,
+    field_drawing_path: Path,
+    paths: list[Path],
+    validation: dict[str, Any],
+) -> dict[str, Any]:
     artifacts = []
     for path in paths:
         if path.exists():
@@ -1880,6 +2018,10 @@ def write_manifest(root: Path, year: str, manual_path: Path, paths: list[Path], 
         "source_manual": {
             "path": rel_path(root, manual_path),
             "sha256": sha256_file(manual_path),
+        },
+        "source_field_drawing": {
+            "path": rel_path(root, field_drawing_path),
+            "sha256": sha256_file(field_drawing_path),
         },
         "generator_versions": {GENERATOR_NAME: GENERATOR_VERSION},
         "artifacts": artifacts,
@@ -1913,17 +2055,24 @@ def append_run_history(root: Path, year: str, validation: dict[str, Any]) -> Non
     write_json(history_path, history)
 
 
-def run_pipeline(root: Path, year: str, manual_path: Path) -> dict[str, Any]:
+def run_pipeline(root: Path, year: str, manual_path: Path, field_drawing_path: Path) -> dict[str, Any]:
     if not manual_path.exists():
         raise FileNotFoundError(f"Manual not found: {manual_path}")
+    if not field_drawing_path.exists():
+        raise FileNotFoundError(f"Field drawing not found: {field_drawing_path}")
     ensure_dirs(root, year)
     manual_hash = sha256_file(manual_path)
+    field_drawing_hash = sha256_file(field_drawing_path)
     pages = extract_pdf_pages(manual_path)
+    field_pages = extract_pdf_pages(field_drawing_path)
     manual_version = find_manual_version(pages)
 
     artifacts_dir = root / "artifacts" / year
     raw_text_path = artifacts_dir / "raw" / "manual_text.txt"
+    raw_field_text_path = artifacts_dir / "raw" / "field_drawing_text.txt"
     rules_path = artifacts_dir / "rules.json"
+    field_layout_reference_path = artifacts_dir / "field_layout_reference.json"
+    apriltag_layout_path = artifacts_dir / "apriltag_field_layout.json"
     mechanics_path = artifacts_dir / "mechanics.json"
     packet_path = artifacts_dir / "manual_insight_packet.json"
     strategy_path = artifacts_dir / "strategy_hypotheses.md"
@@ -1934,8 +2083,13 @@ def run_pipeline(root: Path, year: str, manual_path: Path) -> dict[str, Any]:
     state_path = artifacts_dir / "orchestration_state.json"
 
     write_raw_text(raw_text_path, pages)
+    write_raw_text(raw_field_text_path, field_pages)
     rules = build_rules(year, manual_hash, manual_version, pages, root)
     write_json(rules_path, rules)
+    field_layout_reference = build_field_layout_reference(year, manual_hash, manual_version, field_drawing_hash, field_pages, rules)
+    write_json(field_layout_reference_path, field_layout_reference)
+    apriltag_layout = build_apriltag_field_layout(year, manual_hash, manual_version, field_drawing_hash, rules)
+    write_json(apriltag_layout_path, apriltag_layout)
     mechanics = build_mechanics(year, rules)
     write_json(mechanics_path, mechanics)
     sim_feedback, feedback_status, feedback_missing_keys = load_sim_arch_feedback(sim_feedback_path)
@@ -1960,9 +2114,13 @@ def run_pipeline(root: Path, year: str, manual_path: Path) -> dict[str, Any]:
         root,
         year,
         manual_path,
+        field_drawing_path,
         [
             raw_text_path,
+            raw_field_text_path,
             rules_path,
+            field_layout_reference_path,
+            apriltag_layout_path,
             mechanics_path,
             packet_path,
             strategy_path,
@@ -1981,6 +2139,7 @@ def run_pipeline(root: Path, year: str, manual_path: Path) -> dict[str, Any]:
         "updated_at": utc_now(),
         "current_stage": "qa_validator_bootstrap",
         "source_manual": rel_path(root, manual_path),
+        "source_field_drawing": rel_path(root, field_drawing_path),
         "agents_completed": ["pdf_extractor", "mechanic_analyst", "strategy_architect", "qa_validator"],
         "agents_pending": ["robot_codegen", "power_engineer", "scout_dev", "sim_engineer", "mc_simulator", "advscope_integrator"],
         "release_decision": validation["release_decision"],
@@ -1995,7 +2154,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the FRC AI pipeline bootstrap stages.")
     parser.add_argument("command", choices=["run"], help="Pipeline command to execute.")
     parser.add_argument("--year", default="2026", help="Game year to process.")
-    parser.add_argument("--manual", default=None, help="Path to the game manual PDF. Defaults to inputs/{year}.pdf.")
+    parser.add_argument("--manual", default=None, help="Path to the game manual PDF. Defaults to a year-matched PDF in inputs/.")
+    parser.add_argument("--field-drawing", default=None, help="Path to the field dimension drawing PDF. Defaults to a year-matched field-drawing PDF in inputs/.")
     parser.add_argument("--root", default=None, help="Workspace root. Defaults to the parent of this script directory.")
     return parser.parse_args()
 
@@ -2003,10 +2163,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     root = Path(args.root).resolve() if args.root else Path(__file__).resolve().parents[1]
-    manual_path = Path(args.manual) if args.manual else root / "inputs" / f"{args.year}.pdf"
-    if not manual_path.is_absolute():
-        manual_path = root / manual_path
-    result = run_pipeline(root, args.year, manual_path)
+    manual_path = resolve_input_path(root, args.year, args.manual, "manual")
+    field_drawing_path = resolve_input_path(root, args.year, args.field_drawing, "field_drawing")
+    result = run_pipeline(root, args.year, manual_path, field_drawing_path)
     validation = result["validation"]
     print(json.dumps({"run_id": validation["run_id"], "release_decision": validation["release_decision"], "gates": validation["gates"]}, indent=2))
     return 0 if validation["success"] else 1

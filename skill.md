@@ -19,7 +19,7 @@
 
 ## Skill: Consolidated FRC Manual Insight Analysis
 - **Intent:** Use a single worksheet-driven framework (derived from Team 2791/6328 and FIRST kickoff worksheets) to convert manual text into actionable game insights. Operates as the strategic reasoning layer above PDF Rule Extraction — prefer consuming `rules.json` when available to avoid redundant PDF parsing; fall back to raw PDF only when `rules.json` has not yet been produced.
-- **Input:** `rules.json` (preferred, from PDF Rule Extraction) or game manual PDF (fallback). Team Updates and Q&A clarifications as supplemental inputs. Optional historical game analogs.
+- **Input:** `rules.json` (preferred, from PDF Rule Extraction) or game manual PDF (fallback), plus the field-dimension drawing PDF for the same game year. Team Updates and Q&A clarifications as supplemental inputs. Optional historical game analogs.
 - **Simulation Feedback Input (optional but preferred after first run):** `sim_arch_feedback.json` generated from 2D sim human playtests and/or RL 3v3 self-play architecture sweeps.
 - **Output:**
 	- `manual_insight_packet.json`
@@ -97,17 +97,18 @@
 
 ## Skill: PDF Rule Extraction
 - **Role:** Structured extraction foundation. Produces the machine-readable `rules.json` that both **Consolidated FRC Manual Insight Analysis** (strategic reasoning) and **Game Mechanics Modeling** (computational modeling) consume. Does not perform strategic analysis — extraction only.
-- **Input:** Game manual PDF (via `anthropic/pdf` skill). Also accepts Team Updates and Q&A addenda as supplemental PDFs to merge into output.
-- **Output:** `rules.json` (sections, clauses, constraints, scoring, field dimensions, time limits, equipment limits)
+- **Input:** Game manual PDF plus field-dimension drawing PDF (via `anthropic/pdf` skill). Also accepts Team Updates and Q&A addenda as supplemental PDFs to merge into output.
+- **Output:** `rules.json` (sections, clauses, constraints, scoring, field dimensions, time limits, equipment limits), `field_layout_reference.json`, `apriltag_field_layout.json`
+- **Field-layout artifact contract:** `field_layout_reference.json` must include extracted dimension tokens plus blue-side and red-side reference frames. `apriltag_field_layout.json` must use WPILib `AprilTagFieldLayout` JSON shape with top-level `tags[]` and `field.length` / `field.width`.
 - **Output Contract (minimum keys):** `sections[]` (id, title, text, page), `scoring[]` (action, points, phase, constraints), `penalties[]` (rule_id, type, points), `field` (dimensions, zones, elements), `timing` (auto_s, teleop_s, endgame_s), `equipment_limits` (weight, frame, extension, height), `citations[]` (page, section_id, raw_text)
 - **Tools:** `anthropic/pdf` (primary extraction), `pymupdf`, regex clause parser, table extractor
 - **Downstream consumers:** `Consolidated FRC Manual Insight Analysis` (preferred input over raw PDF), `Game Mechanics Modeling`
 - **Validation:** All game objectives, time limits, penalties, and field measurements present. Every extracted clause must include page and section citation. Cross-check section count against PDF table of contents.
-- **Prompt Template:** `Extract all game rules, constraints, scoring, penalties, field dimensions, and time limits from the PDF. Output rules.json with sections: {sections, scoring, penalties, field, timing, equipment_limits, citations}. Do not interpret or analyze — extract only.`
+- **Prompt Template:** `Extract all game rules, constraints, scoring, penalties, field dimensions, time limits, and field-layout reference data from the game manual PDF plus field-dimension drawing PDF. Output rules.json with sections: {sections, scoring, penalties, field, timing, equipment_limits, citations}, plus field_layout_reference.json and apriltag_field_layout.json. Do not interpret or analyze — extract only.`
 
 ## Skill: Game Mechanics Modeling
 - **Role:** Formal computational modeling layer. Converts `rules.json` into a machine-executable model (state machine + constraint graph) that the Monte Carlo simulator and 2D physics sim consume directly. Distinct from **Consolidated FRC Manual Insight Analysis**, which produces human-readable strategic outputs — this skill produces simulation-ready data structures.
-- **Input:** `rules.json` (from PDF Rule Extraction). Also accepts `manual_insight_packet.json` as a supplemental cross-reference to flag modeling gaps.
+- **Input:** `rules.json` and `field_layout_reference.json` (from PDF Rule Extraction). Also accepts `manual_insight_packet.json` as a supplemental cross-reference to flag modeling gaps.
 - **Output:** `mechanics.json` (state machine, resource flow graph, win conditions, physics constraints)
 - **Output Contract (minimum keys):** `states[]` (id, phase, entry_conditions, exit_conditions), `transitions[]` (from_state, to_state, action, duration_s, point_delta), `resource_constraints[]` (resource, limit, scope), `win_conditions[]` (condition, tiebreaker_order), `physics` (max_speed_mps, max_accel_mps2, robot_footprint_m)
 - **Tools:** `networkx` (constraint graph), constraint solver, `sympy` (physics bounds)
@@ -116,8 +117,8 @@
 - **Prompt Template:** `Convert rules.json into a formal game mechanics model. Build a state machine with states for each game phase and transitions for each scoring action. Model resource constraints and win conditions as computable constraints. Output mechanics.json — do not include strategy recommendations; this is a simulation input, not a strategy document.`
 
 ## Skill: WPILib Robot Code Generation
-- **Input:** `mechanics.json`, `strategy.md`
-- **Output:** WPILib project (Java/C++), subsystems, commands, PID configs
+- **Input:** `mechanics.json`, `strategy.md`, `apriltag_field_layout.json`
+- **Output:** WPILib project (Java/C++), subsystems, commands, PID configs, generated `FieldConstants.java`
 - **Tools:** `jinja2`, wpilib-template, motor/sensor DB
 - **WPILib Version:** WPILib 2026 (current year). Always target the latest 2026 release. Verify the exact version at https://github.com/wpilibsuite/allwpilib/releases before generating code; do not hardcode a patch version.
 - **Vendor Dependencies (always include, always use latest stable release):**
@@ -145,7 +146,7 @@
 - **Prompt Template:** `Build a scouting app that logs {scoring_types, penalties, alliance_role, match_number}. Include offline mode, auto-export, and validation rules.`
 
 ## Skill: 2D Physics Simulation
-- **Input:** Robot params (size, speed, physics, intake width, scoring type)
+- **Input:** Robot params (size, speed, physics, intake width, scoring type) + `field_layout_reference.json`
 - **Goal:** Create a lightweight, TideSim-style top-down multiplayer game for early-season robot architecture decisions.
 - **Output:** Interactive canvas sim + `sim_params.json` + `sim_arch_feedback.json`
 - **Tools:** `pygame`/`p5.js`, `box2d`, kinematics solver
@@ -181,7 +182,7 @@
 ### Core Pipeline Flow (internal skills)
 ```
 [anthropic/pdf]
-    └─> PDF Rule Extraction  ──────────────────────────────────┐
+	└─> PDF Rule Extraction  ──────────────────────────────────┐
             │                                                   │
             ├─> Consolidated FRC Manual Insight Analysis        │  (strategic reasoning layer)
             │       ──[anthropic/doc-coauthoring]               │
@@ -189,7 +190,8 @@
             │               └─> WPILib Robot Code Generation ◄──┤
             │                       ──[anthropic/claude-api]    │
             │                                                   │
-            └─> Game Mechanics Modeling  ◄─────────────────────┘  (computational modeling layer)
+			├─> AprilTag Field Layout JSON  ────────────────────┤  (codegen deploy artifact)
+			└─> Game Mechanics Modeling  ◄─────────────────────┘  (computational modeling layer)
                     ──[codex/jupyter-notebook]
                     └─> mechanics.json
                             ├─> Monte Carlo Strategy Simulation  ──[codex/jupyter-notebook]
@@ -228,6 +230,7 @@
 ### Dependency Rules
 - `anthropic/pdf` must be loaded before any PDF is read or written.
 - **PDF Rule Extraction runs first** and its `rules.json` is the shared input to both Consolidated FRC Manual Insight Analysis and Game Mechanics Modeling. Neither downstream skill should re-parse the raw PDF if `rules.json` exists.
+- **Field-dimension drawings are required peer inputs** to the manual for every game year; they are the source for field layout references, AprilTag layout JSON, sim geometry, and cycle-distance analysis.
 - **Consolidated FRC Manual Insight Analysis** and **Game Mechanics Modeling** are parallel consumers of `rules.json` — they run concurrently after extraction completes. Consolidated produces strategic outputs (human-readable); Game Mechanics produces simulation inputs (machine-readable).
 - `manual_insight_packet.json` (from Consolidated) may be passed to Game Mechanics Modeling as a cross-reference to catch modeling gaps, but is not required.
 - `sim_arch_feedback.json` (from 2D Physics Simulation and/or RL self-play) should be fed back into Consolidated FRC Manual Insight Analysis on subsequent runs to update cycle assumptions and strategy candidate rankings.

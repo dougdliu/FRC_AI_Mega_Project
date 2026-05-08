@@ -620,6 +620,127 @@ public final class Constants {
 }
 """
 
+_FIELD_CONSTANTS_JAVA = """\
+package frc.robot;
+
+import edu.wpi.first.apriltag.AprilTagFieldLayout;
+import edu.wpi.first.apriltag.AprilTagFields;
+import edu.wpi.first.math.geometry.Pose2d;
+import edu.wpi.first.math.geometry.Rotation2d;
+import edu.wpi.first.math.geometry.Translation2d;
+import edu.wpi.first.math.geometry.Translation3d;
+import edu.wpi.first.math.util.Units;
+import edu.wpi.first.wpilibj.DriverStation;
+import edu.wpi.first.wpilibj.Filesystem;
+import java.nio.file.Path;
+import java.util.Optional;
+
+/**
+ * Generated field constants and alliance-aware helpers.
+ *
+ * <p>Coordinates are defined relative to the WPILib field frame from the blue alliance perspective.
+ * Red alliance reference points are produced by mirroring across the field center.
+ */
+public final class FieldConstants {
+
+    public enum AllianceSide {
+        BLUE,
+        RED
+    }
+
+    private static final String DEPLOY_LAYOUT_FILENAME = "apriltag_field_layout.json";
+    private static volatile AprilTagFieldLayout s_layout;
+
+    private FieldConstants() {}
+
+    public static AprilTagFieldLayout getAprilTagLayout() {
+        if (s_layout == null) {
+            synchronized (FieldConstants.class) {
+                if (s_layout == null) {
+                    s_layout = loadLayout();
+                }
+            }
+        }
+        return s_layout;
+    }
+
+    private static AprilTagFieldLayout loadLayout() {
+        try {
+            Path deployPath = Filesystem.getDeployDirectory().toPath().resolve(DEPLOY_LAYOUT_FILENAME);
+            AprilTagFieldLayout deployLayout = new AprilTagFieldLayout(deployPath.toString());
+            if (!deployLayout.getTags().isEmpty()) {
+                return deployLayout;
+            }
+        } catch (Exception ignored) {
+            // Fall through to WPILib bundled layout when deploy artifact is a template or missing.
+        }
+        try {
+            return AprilTagFieldLayout.loadFromResource(AprilTagFields.k2026Reefscape.m_resourceFile);
+        } catch (Exception ex) {
+            throw new RuntimeException("Unable to load AprilTag field layout.", ex);
+        }
+    }
+
+    public static final double APRILTAG_WIDTH_M = Units.inchesToMeters(6.5);
+    public static final double FIELD_LENGTH_M = getAprilTagLayout().getFieldLength();
+    public static final double FIELD_WIDTH_M = getAprilTagLayout().getFieldWidth();
+    public static final Translation2d FIELD_CENTER = new Translation2d(FIELD_LENGTH_M / 2.0, FIELD_WIDTH_M / 2.0);
+
+    public static AllianceSide getCurrentAllianceSide() {
+        return DriverStation.getAlliance()
+            .map(alliance -> alliance == DriverStation.Alliance.Red ? AllianceSide.RED : AllianceSide.BLUE)
+            .orElse(AllianceSide.BLUE);
+    }
+
+    public static Translation2d forAlliance(Translation2d bluePoint, AllianceSide side) {
+        if (side == AllianceSide.BLUE) {
+            return bluePoint;
+        }
+        return new Translation2d(FIELD_LENGTH_M - bluePoint.getX(), FIELD_WIDTH_M - bluePoint.getY());
+    }
+
+    public static Translation3d forAlliance(Translation3d bluePoint, AllianceSide side) {
+        if (side == AllianceSide.BLUE) {
+            return bluePoint;
+        }
+        return new Translation3d(FIELD_LENGTH_M - bluePoint.getX(), FIELD_WIDTH_M - bluePoint.getY(), bluePoint.getZ());
+    }
+
+    public static Pose2d forAlliance(Pose2d bluePose, AllianceSide side) {
+        if (side == AllianceSide.BLUE) {
+            return bluePose;
+        }
+        return new Pose2d(
+            FIELD_LENGTH_M - bluePose.getX(),
+            FIELD_WIDTH_M - bluePose.getY(),
+            bluePose.getRotation().plus(Rotation2d.fromRadians(Math.PI))
+        );
+    }
+
+    public static Optional<Pose2d> getTagPose2d(int tagId) {
+        return getAprilTagLayout().getTagPose(tagId).map(pose -> pose.toPose2d());
+    }
+
+    public static final class BlueAlliance {
+        public static final Translation2d ORIGIN = new Translation2d(0.0, 0.0);
+        public static final Translation2d DRIVER_STATION_MIDPOINT = new Translation2d(0.0, FIELD_WIDTH_M / 2.0);
+        public static final Translation2d SCORING_WALL_MIDPOINT = new Translation2d(FIELD_LENGTH_M, FIELD_WIDTH_M / 2.0);
+        public static final Translation2d FIELD_CENTER_POINT = FIELD_CENTER;
+
+        private BlueAlliance() {}
+    }
+
+    public static final class RedAlliance {
+        public static final Translation2d ORIGIN = new Translation2d(FIELD_LENGTH_M, FIELD_WIDTH_M);
+        public static final Translation2d DRIVER_STATION_MIDPOINT = new Translation2d(FIELD_LENGTH_M, FIELD_WIDTH_M / 2.0);
+        public static final Translation2d SCORING_WALL_MIDPOINT = new Translation2d(0.0, FIELD_WIDTH_M / 2.0);
+        public static final Translation2d FIELD_CENTER_POINT = FIELD_CENTER;
+
+        private RedAlliance() {}
+    }
+}
+"""
+
 _SWERVE_MODULE_JAVA = """\
 package frc.robot.subsystems;
 
@@ -729,7 +850,6 @@ import org.photonvision.PhotonCamera;
 import org.photonvision.PhotonPoseEstimator;
 import org.photonvision.PhotonPoseEstimator.PoseStrategy;
 import edu.wpi.first.apriltag.AprilTagFieldLayout;
-import edu.wpi.first.apriltag.AprilTagFields;
 import edu.wpi.first.math.geometry.Transform3d;
 import edu.wpi.first.math.geometry.Translation3d;
 import edu.wpi.first.math.geometry.Rotation3d;
@@ -738,6 +858,7 @@ import com.pathplanner.lib.auto.AutoBuilder;
 import com.pathplanner.lib.config.RobotConfig;
 import com.pathplanner.lib.controllers.PPHolonomicDriveController;
 import frc.robot.Constants.DriveConstants;
+import frc.robot.FieldConstants;
 
 /** Swerve drive subsystem: 4 × SwerveModule, Pigeon2 gyro, PhotonVision. */
 public class DriveSubsystem extends SubsystemBase {
@@ -764,9 +885,9 @@ public class DriveSubsystem extends SubsystemBase {
     private final PhotonPoseEstimator m_photonEstimator;
 
     public DriveSubsystem() {
-        AprilTagFieldLayout layout;
+        AprilTagFieldLayout layout = null;
         try {
-            layout = AprilTagFieldLayout.loadFromResource(AprilTagFields.k2026Reefscape.m_resourceFile);
+            layout = FieldConstants.getAprilTagLayout();
         } catch (Exception e) {
             layout = null;
         }
@@ -855,72 +976,185 @@ public class DriveSubsystem extends SubsystemBase {
 }
 """
 
-_INTAKE_SUBSYSTEM_JAVA = """\
-package frc.robot.subsystems;
+_AK_INTAKE_IO_JAVA = """\
+package frc.robot.subsystems.intake;
+
+/** IO layer for the intake subsystem. */
+public interface IntakeIO {
+
+    class IntakeIOInputs {
+        public boolean connected = false;
+        public double appliedVolts = 0.0;
+        public double currentAmps = 0.0;
+        public double velocityRps = 0.0;
+    }
+
+    default void updateInputs(IntakeIOInputs inputs) {}
+
+    default void setPercent(double percent) {}
+
+    default void stop() {}
+}
+"""
+
+_AK_INTAKE_IO_TALONFX_JAVA = """\
+package frc.robot.subsystems.intake;
 
 import com.ctre.phoenix6.configs.TalonFXConfiguration;
 import com.ctre.phoenix6.hardware.TalonFX;
 import com.ctre.phoenix6.signals.NeutralModeValue;
-import edu.wpi.first.wpilibj2.command.Command;
-import edu.wpi.first.wpilibj2.command.SubsystemBase;
-import org.littletonrobotics.junction.Logger;
 import frc.robot.Constants.IntakeConstants;
 
-/** Ground FUEL intake subsystem. */
-public class IntakeSubsystem extends SubsystemBase {
-    private final TalonFX m_motor = new TalonFX(IntakeConstants.MOTOR_ID);
+/** TalonFX-backed intake IO for real hardware. */
+public class IntakeIOTalonFX implements IntakeIO {
+    private final TalonFX motor = new TalonFX(IntakeConstants.MOTOR_ID);
 
-    public IntakeSubsystem() {
+    public IntakeIOTalonFX() {
         TalonFXConfiguration cfg = new TalonFXConfiguration();
         cfg.MotorOutput.NeutralMode = NeutralModeValue.Coast;
-        cfg.CurrentLimits.SupplyCurrentLimit       = 30.0;
+        cfg.CurrentLimits.SupplyCurrentLimit = 30.0;
         cfg.CurrentLimits.SupplyCurrentLimitEnable = true;
-        m_motor.getConfigurator().apply(cfg);
+        motor.getConfigurator().apply(cfg);
+    }
+
+    @Override
+    public void updateInputs(IntakeIOInputs inputs) {
+        inputs.connected = true;
+        inputs.appliedVolts = motor.getMotorVoltage().getValueAsDouble();
+        inputs.currentAmps = motor.getSupplyCurrent().getValueAsDouble();
+        inputs.velocityRps = motor.getVelocity().getValueAsDouble();
+    }
+
+    @Override
+    public void setPercent(double percent) {
+        motor.set(percent);
+    }
+
+    @Override
+    public void stop() {
+        motor.stopMotor();
+    }
+}
+"""
+
+_AK_INTAKE_IO_SIM_JAVA = """\
+package frc.robot.subsystems.intake;
+
+/** Lightweight simulated intake IO for desktop testing. */
+public class IntakeIOSim implements IntakeIO {
+    private double appliedPercent = 0.0;
+
+    @Override
+    public void updateInputs(IntakeIOInputs inputs) {
+        inputs.connected = true;
+        inputs.appliedVolts = appliedPercent * 12.0;
+        inputs.currentAmps = Math.abs(appliedPercent) * 18.0;
+        inputs.velocityRps = appliedPercent * 75.0;
+    }
+
+    @Override
+    public void setPercent(double percent) {
+        appliedPercent = percent;
+    }
+
+    @Override
+    public void stop() {
+        appliedPercent = 0.0;
+    }
+}
+"""
+
+_AK_INTAKE_JAVA = """\
+package frc.robot.subsystems.intake;
+
+import edu.wpi.first.wpilibj2.command.Command;
+import edu.wpi.first.wpilibj2.command.SubsystemBase;
+import frc.robot.Constants.IntakeConstants;
+import org.littletonrobotics.junction.Logger;
+
+/** Ground FUEL intake subsystem. */
+public class Intake extends SubsystemBase {
+    private final IntakeIO io;
+    private final IntakeIO.IntakeIOInputs inputs = new IntakeIO.IntakeIOInputs();
+
+    public Intake(IntakeIO io) {
+        this.io = io;
     }
 
     @Override
     public void periodic() {
-        Logger.recordOutput("Intake/CurrentAmps", m_motor.getSupplyCurrent().getValueAsDouble());
-        Logger.recordOutput("Intake/SpeedRPS",    m_motor.getVelocity().getValueAsDouble());
+        io.updateInputs(inputs);
+        Logger.recordOutput("Intake/Connected", inputs.connected);
+        Logger.recordOutput("Intake/CurrentAmps", inputs.currentAmps);
+        Logger.recordOutput("Intake/SpeedRPS", inputs.velocityRps);
     }
 
-    /** Factory: run intake until interrupted. */
     public Command intakeCommand() {
-        return run(() -> m_motor.set(IntakeConstants.INTAKE_SPEED))
-            .finallyDo(interrupted -> m_motor.stopMotor())
+        return run(() -> io.setPercent(IntakeConstants.INTAKE_SPEED))
+            .finallyDo(interrupted -> io.stop())
             .withName("IntakeFuel");
     }
 
-    /** Factory: eject FUEL. */
     public Command ejectCommand() {
-        return run(() -> m_motor.set(IntakeConstants.EJECT_SPEED))
-            .finallyDo(interrupted -> m_motor.stopMotor())
+        return run(() -> io.setPercent(IntakeConstants.EJECT_SPEED))
+            .finallyDo(interrupted -> io.stop())
             .withName("EjectFuel");
     }
 
-    public void stop() { m_motor.stopMotor(); }
+    public void stop() {
+        io.stop();
+    }
 }
 """
 
-_SCORING_SUBSYSTEM_JAVA = """\
-package frc.robot.subsystems;
+_AK_SCORING_IO_JAVA = """\
+package frc.robot.subsystems.scoring;
+
+/** IO layer for the scoring subsystem. */
+public interface ScoringIO {
+
+    class ScoringIOInputs {
+        public boolean flywheelConnected = false;
+        public double flywheelVelocityRps = 0.0;
+        public double flywheelCurrentAmps = 0.0;
+        public boolean feedConnected = false;
+        public double feedCurrentAmps = 0.0;
+        public double feedAppliedVolts = 0.0;
+    }
+
+    default void updateInputs(ScoringIOInputs inputs) {}
+
+    default void setFlywheelVelocityRps(double velocityRps) {}
+
+    default void setFeedPercent(double percent) {}
+
+    default void stopFlywheel() {}
+
+    default void stopFeed() {}
+
+    default void stopAll() {
+        stopFlywheel();
+        stopFeed();
+    }
+}
+"""
+
+_AK_SCORING_IO_TALONFX_JAVA = """\
+package frc.robot.subsystems.scoring;
 
 import com.ctre.phoenix6.configs.TalonFXConfiguration;
 import com.ctre.phoenix6.controls.VelocityVoltage;
 import com.ctre.phoenix6.hardware.TalonFX;
 import com.ctre.phoenix6.signals.NeutralModeValue;
-import edu.wpi.first.wpilibj2.command.Command;
-import edu.wpi.first.wpilibj2.command.SubsystemBase;
-import org.littletonrobotics.junction.Logger;
 import frc.robot.Constants.ScoringConstants;
 
-/** Flywheel shooter + feed roller for scoring FUEL into the HUB. */
-public class ScoringSubsystem extends SubsystemBase {
-    private final TalonFX m_flywheel = new TalonFX(ScoringConstants.FLYWHEEL_ID);
-    private final TalonFX m_feed     = new TalonFX(ScoringConstants.FEED_ID);
-    private final VelocityVoltage m_flywheelReq = new VelocityVoltage(0).withSlot(0);
+/** TalonFX-backed scoring IO for the real flywheel and feed motors. */
+public class ScoringIOTalonFX implements ScoringIO {
+    private final TalonFX flywheel = new TalonFX(ScoringConstants.FLYWHEEL_ID);
+    private final TalonFX feed = new TalonFX(ScoringConstants.FEED_ID);
+    private final VelocityVoltage flywheelRequest = new VelocityVoltage(0.0).withSlot(0);
 
-    public ScoringSubsystem() {
+    public ScoringIOTalonFX() {
         TalonFXConfiguration flywheelCfg = new TalonFXConfiguration();
         flywheelCfg.Slot0.kP = 0.5;
         flywheelCfg.Slot0.kI = 0.0;
@@ -929,120 +1163,352 @@ public class ScoringSubsystem extends SubsystemBase {
         flywheelCfg.MotorOutput.NeutralMode = NeutralModeValue.Coast;
         flywheelCfg.CurrentLimits.SupplyCurrentLimit = 40.0;
         flywheelCfg.CurrentLimits.SupplyCurrentLimitEnable = true;
-        m_flywheel.getConfigurator().apply(flywheelCfg);
+        flywheel.getConfigurator().apply(flywheelCfg);
 
         TalonFXConfiguration feedCfg = new TalonFXConfiguration();
         feedCfg.MotorOutput.NeutralMode = NeutralModeValue.Coast;
         feedCfg.CurrentLimits.SupplyCurrentLimit = 20.0;
         feedCfg.CurrentLimits.SupplyCurrentLimitEnable = true;
-        m_feed.getConfigurator().apply(feedCfg);
+        feed.getConfigurator().apply(feedCfg);
+    }
+
+    @Override
+    public void updateInputs(ScoringIOInputs inputs) {
+        inputs.flywheelConnected = true;
+        inputs.flywheelVelocityRps = flywheel.getVelocity().getValueAsDouble();
+        inputs.flywheelCurrentAmps = flywheel.getSupplyCurrent().getValueAsDouble();
+        inputs.feedConnected = true;
+        inputs.feedCurrentAmps = feed.getSupplyCurrent().getValueAsDouble();
+        inputs.feedAppliedVolts = feed.getMotorVoltage().getValueAsDouble();
+    }
+
+    @Override
+    public void setFlywheelVelocityRps(double velocityRps) {
+        flywheel.setControl(flywheelRequest.withVelocity(velocityRps));
+    }
+
+    @Override
+    public void setFeedPercent(double percent) {
+        feed.set(percent);
+    }
+
+    @Override
+    public void stopFlywheel() {
+        flywheel.stopMotor();
+    }
+
+    @Override
+    public void stopFeed() {
+        feed.stopMotor();
+    }
+}
+"""
+
+_AK_SCORING_IO_SIM_JAVA = """\
+package frc.robot.subsystems.scoring;
+
+import edu.wpi.first.wpilibj.Timer;
+
+/** Lightweight simulated scoring IO for desktop testing. */
+public class ScoringIOSim implements ScoringIO {
+    private double targetFlywheelRps = 0.0;
+    private double flywheelVelocityRps = 0.0;
+    private double feedPercent = 0.0;
+    private double lastTimestamp = Timer.getFPGATimestamp();
+
+    @Override
+    public void updateInputs(ScoringIOInputs inputs) {
+        double now = Timer.getFPGATimestamp();
+        double dt = Math.max(0.0, now - lastTimestamp);
+        lastTimestamp = now;
+
+        double response = Math.min(1.0, dt * 6.0);
+        flywheelVelocityRps += (targetFlywheelRps - flywheelVelocityRps) * response;
+
+        inputs.flywheelConnected = true;
+        inputs.flywheelVelocityRps = flywheelVelocityRps;
+        inputs.flywheelCurrentAmps = Math.abs(targetFlywheelRps - flywheelVelocityRps) * 0.35 + Math.abs(targetFlywheelRps) * 0.08;
+        inputs.feedConnected = true;
+        inputs.feedCurrentAmps = Math.abs(feedPercent) * 12.0;
+        inputs.feedAppliedVolts = feedPercent * 12.0;
+    }
+
+    @Override
+    public void setFlywheelVelocityRps(double velocityRps) {
+        targetFlywheelRps = velocityRps;
+    }
+
+    @Override
+    public void setFeedPercent(double percent) {
+        feedPercent = percent;
+    }
+
+    @Override
+    public void stopFlywheel() {
+        targetFlywheelRps = 0.0;
+    }
+
+    @Override
+    public void stopFeed() {
+        feedPercent = 0.0;
+    }
+}
+"""
+
+_AK_SCORING_JAVA = """\
+package frc.robot.subsystems.scoring;
+
+import edu.wpi.first.wpilibj2.command.Command;
+import edu.wpi.first.wpilibj2.command.Commands;
+import edu.wpi.first.wpilibj2.command.SubsystemBase;
+import frc.robot.Constants.ScoringConstants;
+import org.littletonrobotics.junction.Logger;
+
+/** Flywheel shooter plus feed roller for scoring FUEL into the HUB. */
+public class Scoring extends SubsystemBase {
+    private final ScoringIO io;
+    private final ScoringIO.ScoringIOInputs inputs = new ScoringIO.ScoringIOInputs();
+
+    public Scoring(ScoringIO io) {
+        this.io = io;
     }
 
     @Override
     public void periodic() {
-        Logger.recordOutput("Scoring/FlywheelRPS",    m_flywheel.getVelocity().getValueAsDouble());
-        Logger.recordOutput("Scoring/IsAtSpeed",      isAtSpeed());
-        Logger.recordOutput("Scoring/FeedCurrentAmps", m_feed.getSupplyCurrent().getValueAsDouble());
+        io.updateInputs(inputs);
+        Logger.recordOutput("Scoring/FlywheelConnected", inputs.flywheelConnected);
+        Logger.recordOutput("Scoring/FlywheelRPS", inputs.flywheelVelocityRps);
+        Logger.recordOutput("Scoring/FlywheelCurrentAmps", inputs.flywheelCurrentAmps);
+        Logger.recordOutput("Scoring/FeedConnected", inputs.feedConnected);
+        Logger.recordOutput("Scoring/FeedCurrentAmps", inputs.feedCurrentAmps);
+        Logger.recordOutput("Scoring/IsAtSpeed", isAtSpeed());
     }
 
     public boolean isAtSpeed() {
-        return Math.abs(m_flywheel.getVelocity().getValueAsDouble()
-            - ScoringConstants.FLYWHEEL_RPS) <= ScoringConstants.FLYWHEEL_TOLERANCE_RPS;
+        return Math.abs(inputs.flywheelVelocityRps - ScoringConstants.FLYWHEEL_RPS)
+            <= ScoringConstants.FLYWHEEL_TOLERANCE_RPS;
     }
 
-    /** Spin flywheel up to speed, then feed FUEL once ready. */
     public Command scoreCommand() {
-        return runOnce(() -> m_flywheel.setControl(m_flywheelReq.withVelocity(ScoringConstants.FLYWHEEL_RPS)))
-            .andThen(edu.wpi.first.wpilibj2.command.Commands.waitUntil(this::isAtSpeed))
-            .andThen(run(() -> m_feed.set(ScoringConstants.FEED_SPEED)))
-            .finallyDo(interrupted -> { m_flywheel.stopMotor(); m_feed.stopMotor(); })
+        return runOnce(() -> io.setFlywheelVelocityRps(ScoringConstants.FLYWHEEL_RPS))
+            .andThen(Commands.waitUntil(this::isAtSpeed))
+            .andThen(run(() -> {
+                io.setFlywheelVelocityRps(ScoringConstants.FLYWHEEL_RPS);
+                io.setFeedPercent(ScoringConstants.FEED_SPEED);
+            }))
+            .finallyDo(interrupted -> io.stopAll())
             .withName("ScoreFuel");
     }
 
-    /** Spin flywheel only (pre-spin during transit to HUB). */
     public Command spinUpCommand() {
-        return run(() -> m_flywheel.setControl(m_flywheelReq.withVelocity(ScoringConstants.FLYWHEEL_RPS)))
+        return startEnd(
+            () -> io.setFlywheelVelocityRps(ScoringConstants.FLYWHEEL_RPS),
+            () -> io.stopFlywheel())
             .withName("SpinUpFlywheel");
     }
 
-    public void stop() { m_flywheel.stopMotor(); m_feed.stopMotor(); }
+    public void stop() {
+        io.stopAll();
+    }
 }
 """
 
-_LIFT_SUBSYSTEM_JAVA = """\
-package frc.robot.subsystems;
+_AK_LIFT_IO_JAVA = """\
+package frc.robot.subsystems.lift;
+
+/** IO layer for the lift subsystem. */
+public interface LiftIO {
+
+    class LiftIOInputs {
+        public boolean leaderConnected = false;
+        public boolean followerConnected = false;
+        public double positionRotations = 0.0;
+        public double targetRotations = 0.0;
+        public double currentAmps = 0.0;
+    }
+
+    default void updateInputs(LiftIOInputs inputs) {}
+
+    default void setTargetPositionRotations(double rotations) {}
+
+    default void zeroPosition() {}
+
+    default void stop() {}
+}
+"""
+
+_AK_LIFT_IO_TALONFX_JAVA = """\
+package frc.robot.subsystems.lift;
 
 import com.ctre.phoenix6.configs.TalonFXConfiguration;
 import com.ctre.phoenix6.controls.Follower;
 import com.ctre.phoenix6.controls.PositionVoltage;
 import com.ctre.phoenix6.hardware.TalonFX;
 import com.ctre.phoenix6.signals.NeutralModeValue;
-import edu.wpi.first.wpilibj2.command.Command;
-import edu.wpi.first.wpilibj2.command.SubsystemBase;
-import org.littletonrobotics.junction.Logger;
 import frc.robot.Constants.LiftConstants;
 
-/**
- * TOWER-climbing elevator/winch.
- * Supports LEVEL 1 (off carpet), LEVEL 2 (above LOW RUNG), LEVEL 3 (above MID RUNG).
- * Per G-rule analysis: robot may only earn points for a single LEVEL in TELEOP.
- */
-public class LiftSubsystem extends SubsystemBase {
-    private final TalonFX m_leader   = new TalonFX(LiftConstants.MOTOR_ID);
-    private final TalonFX m_follower = new TalonFX(LiftConstants.FOLLOWER_ID);
-    private final PositionVoltage m_posReq = new PositionVoltage(0).withSlot(0);
+/** TalonFX-backed lift IO for the real robot. */
+public class LiftIOTalonFX implements LiftIO {
+    private final TalonFX leader = new TalonFX(LiftConstants.MOTOR_ID);
+    private final TalonFX follower = new TalonFX(LiftConstants.FOLLOWER_ID);
+    private final PositionVoltage positionRequest = new PositionVoltage(0.0).withSlot(0);
+    private double targetRotations = LiftConstants.RETRACTED;
 
-    private int m_targetLevel = 0;
-
-    public LiftSubsystem() {
+    public LiftIOTalonFX() {
         TalonFXConfiguration cfg = new TalonFXConfiguration();
         cfg.Slot0.kP = LiftConstants.KP;
         cfg.Slot0.kI = LiftConstants.KI;
         cfg.Slot0.kD = LiftConstants.KD;
         cfg.MotorOutput.NeutralMode = NeutralModeValue.Brake;
-        cfg.CurrentLimits.StatorCurrentLimit       = LiftConstants.STALL_LIMIT;
+        cfg.CurrentLimits.StatorCurrentLimit = LiftConstants.STALL_LIMIT;
         cfg.CurrentLimits.StatorCurrentLimitEnable = true;
-        m_leader.getConfigurator().apply(cfg);
-        m_follower.getConfigurator().apply(cfg);
-        m_follower.setControl(new Follower(LiftConstants.MOTOR_ID, false));
-        m_leader.setPosition(0); // zero on startup
+        leader.getConfigurator().apply(cfg);
+        follower.getConfigurator().apply(cfg);
+        follower.setControl(new Follower(LiftConstants.MOTOR_ID, false));
+        zeroPosition();
+    }
+
+    @Override
+    public void updateInputs(LiftIOInputs inputs) {
+        inputs.leaderConnected = true;
+        inputs.followerConnected = true;
+        inputs.positionRotations = leader.getPosition().getValueAsDouble();
+        inputs.targetRotations = targetRotations;
+        inputs.currentAmps = leader.getSupplyCurrent().getValueAsDouble();
+    }
+
+    @Override
+    public void setTargetPositionRotations(double rotations) {
+        targetRotations = rotations;
+        leader.setControl(positionRequest.withPosition(rotations));
+    }
+
+    @Override
+    public void zeroPosition() {
+        leader.setPosition(0.0);
+        targetRotations = 0.0;
+    }
+
+    @Override
+    public void stop() {
+        leader.stopMotor();
+        follower.stopMotor();
+    }
+}
+"""
+
+_AK_LIFT_IO_SIM_JAVA = """\
+package frc.robot.subsystems.lift;
+
+import edu.wpi.first.wpilibj.Timer;
+
+/** Lightweight simulated lift IO for desktop testing. */
+public class LiftIOSim implements LiftIO {
+    private double positionRotations = 0.0;
+    private double targetRotations = 0.0;
+    private double lastTimestamp = Timer.getFPGATimestamp();
+
+    @Override
+    public void updateInputs(LiftIOInputs inputs) {
+        double now = Timer.getFPGATimestamp();
+        double dt = Math.max(0.0, now - lastTimestamp);
+        lastTimestamp = now;
+
+        double error = targetRotations - positionRotations;
+        double maxStep = dt * 40.0;
+        positionRotations += Math.copySign(Math.min(Math.abs(error), maxStep), error);
+
+        inputs.leaderConnected = true;
+        inputs.followerConnected = true;
+        inputs.positionRotations = positionRotations;
+        inputs.targetRotations = targetRotations;
+        inputs.currentAmps = Math.min(40.0, Math.abs(error) * 2.0);
+    }
+
+    @Override
+    public void setTargetPositionRotations(double rotations) {
+        targetRotations = rotations;
+    }
+
+    @Override
+    public void zeroPosition() {
+        positionRotations = 0.0;
+        targetRotations = 0.0;
+    }
+
+    @Override
+    public void stop() {
+        targetRotations = positionRotations;
+    }
+}
+"""
+
+_AK_LIFT_JAVA = """\
+package frc.robot.subsystems.lift;
+
+import edu.wpi.first.wpilibj2.command.Command;
+import edu.wpi.first.wpilibj2.command.Commands;
+import edu.wpi.first.wpilibj2.command.SubsystemBase;
+import frc.robot.Constants.LiftConstants;
+import org.littletonrobotics.junction.Logger;
+
+/**
+ * TOWER-climbing elevator/winch.
+ * Supports LEVEL 1 (off carpet), LEVEL 2 (above LOW RUNG), LEVEL 3 (above MID RUNG).
+ */
+public class Lift extends SubsystemBase {
+    private final LiftIO io;
+    private final LiftIO.LiftIOInputs inputs = new LiftIO.LiftIOInputs();
+    private int targetLevel = 0;
+
+    public Lift(LiftIO io) {
+        this.io = io;
+        io.zeroPosition();
     }
 
     @Override
     public void periodic() {
-        Logger.recordOutput("Lift/PositionRot",   m_leader.getPosition().getValueAsDouble());
-        Logger.recordOutput("Lift/TargetLevel",   m_targetLevel);
-        Logger.recordOutput("Lift/AtTarget",      isAtTarget());
-        Logger.recordOutput("Lift/CurrentAmps",   m_leader.getSupplyCurrent().getValueAsDouble());
+        io.updateInputs(inputs);
+        Logger.recordOutput("Lift/LeaderConnected", inputs.leaderConnected);
+        Logger.recordOutput("Lift/FollowerConnected", inputs.followerConnected);
+        Logger.recordOutput("Lift/PositionRot", inputs.positionRotations);
+        Logger.recordOutput("Lift/TargetLevel", targetLevel);
+        Logger.recordOutput("Lift/AtTarget", isAtTarget());
+        Logger.recordOutput("Lift/CurrentAmps", inputs.currentAmps);
     }
 
     private double levelToPosition(int level) {
         return switch (level) {
-            case 1  -> LiftConstants.LEVEL_1_POS;
-            case 2  -> LiftConstants.LEVEL_2_POS;
-            case 3  -> LiftConstants.LEVEL_3_POS;
+            case 1 -> LiftConstants.LEVEL_1_POS;
+            case 2 -> LiftConstants.LEVEL_2_POS;
+            case 3 -> LiftConstants.LEVEL_3_POS;
             default -> LiftConstants.RETRACTED;
         };
     }
 
     public boolean isAtTarget() {
-        return Math.abs(m_leader.getPosition().getValueAsDouble()
-            - levelToPosition(m_targetLevel)) <= LiftConstants.POS_TOLERANCE;
+        return Math.abs(inputs.positionRotations - levelToPosition(targetLevel)) <= LiftConstants.POS_TOLERANCE;
     }
 
-    /** Command: climb to the specified TOWER level (0 = retract). */
     public Command climbToLevel(int level) {
         return runOnce(() -> {
-            m_targetLevel = level;
-            m_leader.setControl(m_posReq.withPosition(levelToPosition(level)));
-        }).andThen(edu.wpi.first.wpilibj2.command.Commands.waitUntil(this::isAtTarget))
+            targetLevel = level;
+            io.setTargetPositionRotations(levelToPosition(level));
+        }).andThen(Commands.waitUntil(this::isAtTarget))
           .withName("ClimbLevel" + level);
     }
 
-    /** Command: retract lift to floor. */
-    public Command retractCommand() { return climbToLevel(0); }
+    public Command retractCommand() {
+        return climbToLevel(0);
+    }
 
-    public int getCurrentLevel() { return m_targetLevel; }
+    public int getCurrentLevel() {
+        return targetLevel;
+    }
+
+    public void stop() {
+        io.stop();
+    }
 }
 """
 
@@ -1186,40 +1652,1483 @@ public final class AutoRoutines {
 }
 """
 
+_AK_BUILD_GRADLE = """\
+// build.gradle — AdvantageKit-style TalonFX swerve + PhotonVision hybrid
+// TODO: Verify exact library versions against official releases before deploy.
+plugins {
+    id "java"
+    id "edu.wpi.first.GradleRIO" version "2026.1.1"
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+def ROBOT_MAIN_CLASS = "frc.robot.Main"
+
+deploy {
+    targets {
+        roborio(getTargetTypeClass('RoboRIO')) {
+            team = project.frc.getTeamOrDefault(9999)
+            debug = project.findProperty("debug") ?: false
+            artifacts {
+                frcJava(getArtifactTypeClass('FRCJavaArtifact')) {}
+                frcStaticFileDeploy(getArtifactTypeClass('FileTreeArtifact')) {
+                    files = project.fileTree('src/main/deploy')
+                    directory = '/home/lvuser/deploy'
+                }
+            }
+        }
+    }
+}
+
+repositories {
+    mavenLocal()
+    maven { url = uri("https://frcmaven.wpi.edu/release") }
+    maven { url = uri("https://maven.ctr-electronics.com/release/") }
+    maven { url = uri("https://maven.photonvision.org/repository/internal") }
+    maven { url = uri("https://maven.pkg.github.com/Mechanical-Advantage/AdvantageKit") }
+}
+
+dependencies {
+    implementation wpi.java.deps.wpilib()
+    implementation wpi.java.vendor.java()
+
+    roboRIODebugRuntime wpi.java.deps.wpilibJniDebug(wpi.platforms.roborio)
+    roboRIODebugRuntime wpi.java.vendor.jniDebug(wpi.platforms.roborio)
+    nativeDebug wpi.java.deps.wpilibJniDebug(wpi.platforms.desktop)
+    nativeDebug wpi.java.vendor.jniDebug(wpi.platforms.desktop)
+    simulationDebug wpi.java.deps.wpilibJniDebug(wpi.platforms.desktop)
+    simulationDebug wpi.java.vendor.jniDebug(wpi.platforms.desktop)
+    nativeRelease wpi.java.deps.wpilibJniRelease(wpi.platforms.desktop)
+    nativeRelease wpi.java.vendor.jniRelease(wpi.platforms.desktop)
+    simulationRelease wpi.java.deps.wpilibJniRelease(wpi.platforms.desktop)
+    simulationRelease wpi.java.vendor.jniRelease(wpi.platforms.desktop)
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.1'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.10.1'
+}
+
+test {
+    useJUnitPlatform()
+    systemProperty 'junit.jupiter.extensions.autodetection.enabled', 'true'
+}
+
+wpi.java.configureExecutableTasks(jar)
+wpi.java.configureTestTasks(test)
+
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs.add '-XDstringConcat=inline'
+}
+
+jar {
+    manifest { attributes 'Main-Class': ROBOT_MAIN_CLASS }
+}
+"""
+
+_AK_CONSTANTS_JAVA = """\
+package frc.robot;
+
+import edu.wpi.first.wpilibj.RobotBase;
+
+/** Project-wide runtime mode and mechanism constants. */
+public final class Constants {
+
+    public static final int TEAM_NUMBER = 9999; // TODO: set team number
+
+    public static final Mode simMode = Mode.SIM;
+    public static final Mode currentMode = RobotBase.isReal() ? Mode.REAL : simMode;
+
+    public enum Mode {
+        REAL,
+        SIM,
+        REPLAY
+    }
+
+    /** FUEL ground intake (single roller, TalonFX). */
+    public static final class IntakeConstants {
+        public static final int MOTOR_ID = 30;
+        public static final double INTAKE_SPEED = 0.8;
+        public static final double EJECT_SPEED = -0.5;
+
+        private IntakeConstants() {}
+    }
+
+    /** HUB scoring flywheel + feed roller. */
+    public static final class ScoringConstants {
+        public static final int FLYWHEEL_ID = 31;
+        public static final int FEED_ID = 32;
+        public static final double FLYWHEEL_RPS = 80.0;
+        public static final double FLYWHEEL_TOLERANCE_RPS = 3.0;
+        public static final double FEED_SPEED = 0.6;
+
+        private ScoringConstants() {}
+    }
+
+    /** Tower climbing elevator/winch (2x TalonFX, one follows the other). */
+    public static final class LiftConstants {
+        public static final int MOTOR_ID = 40;
+        public static final int FOLLOWER_ID = 41;
+        public static final double RETRACTED = 0.0;
+        public static final double LEVEL_1_POS = 10.0;
+        public static final double LEVEL_2_POS = 35.0;
+        public static final double LEVEL_3_POS = 65.0;
+        public static final double POS_TOLERANCE = 1.0;
+        public static final double STALL_LIMIT = 60.0;
+        public static final double KP = 2.0;
+        public static final double KI = 0.0;
+        public static final double KD = 0.1;
+
+        private LiftConstants() {}
+    }
+
+    public static final class OperatorConstants {
+        public static final int DRIVER_PORT = 0;
+        public static final int OPERATOR_PORT = 1;
+        public static final double DEADBAND = 0.1;
+
+        private OperatorConstants() {}
+    }
+
+    private Constants() {}
+}
+"""
+
+_AK_ROBOT_JAVA = """\
+package frc.robot;
+
+import edu.wpi.first.wpilibj.Timer;
+import edu.wpi.first.wpilibj2.command.Command;
+import edu.wpi.first.wpilibj2.command.CommandScheduler;
+import org.littletonrobotics.junction.LogFileUtil;
+import org.littletonrobotics.junction.LoggedRobot;
+import org.littletonrobotics.junction.Logger;
+import org.littletonrobotics.junction.networktables.NT4Publisher;
+import org.littletonrobotics.junction.wpilog.WPILOGReader;
+import org.littletonrobotics.junction.wpilog.WPILOGWriter;
+
+/** Top-level robot class using AdvantageKit LoggedRobot mode wiring. */
+public class Robot extends LoggedRobot {
+    private Command autonomousCommand;
+    private final RobotContainer robotContainer;
+
+    public Robot() {
+        Logger.recordMetadata("ProjectName", "REBUILT_Robot_2026");
+        Logger.recordMetadata("RuntimeMode", Constants.currentMode.name());
+        Logger.recordMetadata("RobotArchitecture", "AdvantageKit-style TalonFX swerve + PhotonVision");
+
+        switch (Constants.currentMode) {
+            case REAL -> {
+                Logger.addDataReceiver(new WPILOGWriter());
+                Logger.addDataReceiver(new NT4Publisher());
+            }
+            case SIM -> Logger.addDataReceiver(new NT4Publisher());
+            case REPLAY -> {
+                setUseTiming(false);
+                String logPath = LogFileUtil.findReplayLog();
+                Logger.setReplaySource(new WPILOGReader(logPath));
+                Logger.addDataReceiver(new WPILOGWriter(LogFileUtil.addPathSuffix(logPath, "_sim")));
+            }
+        }
+
+        Logger.start();
+        robotContainer = new RobotContainer();
+    }
+
+    @Override
+    public void robotPeriodic() {
+        CommandScheduler.getInstance().run();
+        Logger.recordOutput("MatchTime", Timer.getMatchTime());
+    }
+
+    @Override
+    public void autonomousInit() {
+        autonomousCommand = robotContainer.getAutonomousCommand();
+        if (autonomousCommand != null) {
+            autonomousCommand.schedule();
+        }
+    }
+
+    @Override
+    public void teleopInit() {
+        if (autonomousCommand != null) {
+            autonomousCommand.cancel();
+        }
+    }
+
+    @Override
+    public void testInit() {
+        CommandScheduler.getInstance().cancelAll();
+    }
+}
+"""
+
+_AK_TUNER_CONSTANTS_JAVA = """\
+package frc.robot.generated;
+
+import edu.wpi.first.math.util.Units;
+
+/**
+ * Generated drive constants modeled after CTRE Tuner X output.
+ *
+ * <p>Replace CAN IDs, offsets, inversions, and gains with values exported from Tuner X before
+ * enabling this on real hardware.
+ */
+public final class TunerConstants {
+    public static final String kCANBusName = "rio";
+    public static final int kPigeonId = 20;
+    public static final double kSpeedAt12VoltsMps = 4.5;
+
+    public static final class Slot0Gains {
+        public final double kP;
+        public final double kI;
+        public final double kD;
+        public final double kS;
+        public final double kV;
+
+        public Slot0Gains(double kP, double kI, double kD, double kS, double kV) {
+            this.kP = kP;
+            this.kI = kI;
+            this.kD = kD;
+            this.kS = kS;
+            this.kV = kV;
+        }
+    }
+
+    public static final class ModuleConstants {
+        public final int DriveMotorId;
+        public final int SteerMotorId;
+        public final int EncoderId;
+        public final double EncoderOffset;
+        public final boolean DriveMotorInverted;
+        public final boolean SteerMotorInverted;
+        public final boolean EncoderInverted;
+        public final double DriveMotorGearRatio;
+        public final double SteerMotorGearRatio;
+        public final double WheelRadius;
+        public final double SlipCurrent;
+        public final double LocationX;
+        public final double LocationY;
+        public final Slot0Gains DriveMotorGains;
+        public final Slot0Gains SteerMotorGains;
+
+        public ModuleConstants(
+            int driveMotorId,
+            int steerMotorId,
+            int encoderId,
+            double encoderOffset,
+            boolean driveMotorInverted,
+            boolean steerMotorInverted,
+            boolean encoderInverted,
+            double driveMotorGearRatio,
+            double steerMotorGearRatio,
+            double wheelRadius,
+            double slipCurrent,
+            double locationX,
+            double locationY,
+            Slot0Gains driveMotorGains,
+            Slot0Gains steerMotorGains
+        ) {
+            DriveMotorId = driveMotorId;
+            SteerMotorId = steerMotorId;
+            EncoderId = encoderId;
+            EncoderOffset = encoderOffset;
+            DriveMotorInverted = driveMotorInverted;
+            SteerMotorInverted = steerMotorInverted;
+            EncoderInverted = encoderInverted;
+            DriveMotorGearRatio = driveMotorGearRatio;
+            SteerMotorGearRatio = steerMotorGearRatio;
+            WheelRadius = wheelRadius;
+            SlipCurrent = slipCurrent;
+            LocationX = locationX;
+            LocationY = locationY;
+            DriveMotorGains = driveMotorGains;
+            SteerMotorGains = steerMotorGains;
+        }
+    }
+
+    private static final Slot0Gains driveGains = new Slot0Gains(0.1, 0.0, 0.0, 0.1, 2.3);
+    private static final Slot0Gains steerGains = new Slot0Gains(80.0, 0.0, 0.5, 0.0, 0.0);
+
+    private static final double kDriveGearRatio = 6.75;
+    private static final double kSteerGearRatio = 21.4286;
+    private static final double kWheelRadius = Units.inchesToMeters(2.0);
+    private static final double kSlipCurrent = 60.0;
+
+    private static final double kFrontLeftXPos = Units.inchesToMeters(11.0);
+    private static final double kFrontLeftYPos = Units.inchesToMeters(11.0);
+    private static final double kFrontRightXPos = Units.inchesToMeters(11.0);
+    private static final double kFrontRightYPos = Units.inchesToMeters(-11.0);
+    private static final double kBackLeftXPos = Units.inchesToMeters(-11.0);
+    private static final double kBackLeftYPos = Units.inchesToMeters(11.0);
+    private static final double kBackRightXPos = Units.inchesToMeters(-11.0);
+    private static final double kBackRightYPos = Units.inchesToMeters(-11.0);
+
+    public static final ModuleConstants FrontLeft = new ModuleConstants(
+        1, 2, 11, 0.0, false, false, false,
+        kDriveGearRatio, kSteerGearRatio, kWheelRadius, kSlipCurrent,
+        kFrontLeftXPos, kFrontLeftYPos, driveGains, steerGains);
+    public static final ModuleConstants FrontRight = new ModuleConstants(
+        3, 4, 12, 0.0, false, false, false,
+        kDriveGearRatio, kSteerGearRatio, kWheelRadius, kSlipCurrent,
+        kFrontRightXPos, kFrontRightYPos, driveGains, steerGains);
+    public static final ModuleConstants BackLeft = new ModuleConstants(
+        5, 6, 13, 0.0, false, false, false,
+        kDriveGearRatio, kSteerGearRatio, kWheelRadius, kSlipCurrent,
+        kBackLeftXPos, kBackLeftYPos, driveGains, steerGains);
+    public static final ModuleConstants BackRight = new ModuleConstants(
+        7, 8, 14, 0.0, false, false, false,
+        kDriveGearRatio, kSteerGearRatio, kWheelRadius, kSlipCurrent,
+        kBackRightXPos, kBackRightYPos, driveGains, steerGains);
+
+    private TunerConstants() {}
+}
+"""
+
+_AK_GYRO_IO_JAVA = """\
+package frc.robot.subsystems.drive;
+
+import edu.wpi.first.math.geometry.Rotation2d;
+
+/** Gyro abstraction used by the drive subsystem. */
+public interface GyroIO {
+
+    class GyroIOInputs {
+        public boolean connected = false;
+        public Rotation2d yawPosition = Rotation2d.kZero;
+        public double yawVelocityRadPerSec = 0.0;
+    }
+
+    default void updateInputs(GyroIOInputs inputs) {}
+
+    default void zero() {}
+}
+"""
+
+_AK_GYRO_IO_PIGEON2_JAVA = """\
+package frc.robot.subsystems.drive;
+
+import com.ctre.phoenix6.hardware.Pigeon2;
+import edu.wpi.first.math.geometry.Rotation2d;
+import edu.wpi.first.math.util.Units;
+import frc.robot.generated.TunerConstants;
+
+/** Pigeon2-backed gyro IO for real TalonFX swerve hardware. */
+public class GyroIOPigeon2 implements GyroIO {
+    private final Pigeon2 pigeon = new Pigeon2(TunerConstants.kPigeonId, TunerConstants.kCANBusName);
+
+    @Override
+    public void updateInputs(GyroIOInputs inputs) {
+        inputs.connected = true;
+        inputs.yawPosition = pigeon.getRotation2d();
+        inputs.yawVelocityRadPerSec = Units.degreesToRadians(pigeon.getAngularVelocityZWorld().getValueAsDouble());
+    }
+
+    @Override
+    public void zero() {
+        pigeon.reset();
+    }
+}
+"""
+
+_AK_MODULE_IO_JAVA = """\
+package frc.robot.subsystems.drive;
+
+import edu.wpi.first.math.geometry.Rotation2d;
+
+/** Module IO abstraction patterned after the AdvantageKit swerve templates. */
+public interface ModuleIO {
+
+    class ModuleIOInputs {
+        public boolean driveConnected = false;
+        public double drivePositionRad = 0.0;
+        public double driveVelocityRadPerSec = 0.0;
+        public double driveAppliedVolts = 0.0;
+        public double driveCurrentAmps = 0.0;
+
+        public boolean turnConnected = false;
+        public boolean turnEncoderConnected = false;
+        public Rotation2d turnAbsolutePosition = Rotation2d.kZero;
+        public Rotation2d turnPosition = Rotation2d.kZero;
+        public double turnVelocityRadPerSec = 0.0;
+        public double turnAppliedVolts = 0.0;
+        public double turnCurrentAmps = 0.0;
+    }
+
+    default void updateInputs(ModuleIOInputs inputs) {}
+
+    default void setDriveOpenLoop(double outputVolts) {}
+
+    default void setTurnOpenLoop(double outputVolts) {}
+
+    default void setDriveVelocity(double velocityRadPerSec) {}
+
+    default void setTurnPosition(Rotation2d rotation) {}
+
+    default void stop() {}
+}
+"""
+
+_AK_MODULE_IO_TALONFX_JAVA = """\
+package frc.robot.subsystems.drive;
+
+import com.ctre.phoenix6.configs.CANcoderConfiguration;
+import com.ctre.phoenix6.configs.TalonFXConfiguration;
+import com.ctre.phoenix6.controls.PositionVoltage;
+import com.ctre.phoenix6.controls.VelocityVoltage;
+import com.ctre.phoenix6.controls.VoltageOut;
+import com.ctre.phoenix6.hardware.CANcoder;
+import com.ctre.phoenix6.hardware.TalonFX;
+import com.ctre.phoenix6.signals.FeedbackSensorSourceValue;
+import com.ctre.phoenix6.signals.InvertedValue;
+import com.ctre.phoenix6.signals.NeutralModeValue;
+import com.ctre.phoenix6.signals.SensorDirectionValue;
+import edu.wpi.first.math.geometry.Rotation2d;
+import edu.wpi.first.math.util.Units;
+import frc.robot.generated.TunerConstants;
+import frc.robot.generated.TunerConstants.ModuleConstants;
+
+/** TalonFX + CANcoder module implementation for real robots. */
+public class ModuleIOTalonFX implements ModuleIO {
+    private final ModuleConstants constants;
+    private final TalonFX driveMotor;
+    private final TalonFX turnMotor;
+    private final CANcoder turnEncoder;
+
+    private final VelocityVoltage driveVelocityRequest = new VelocityVoltage(0.0).withSlot(0);
+    private final PositionVoltage turnPositionRequest = new PositionVoltage(0.0).withSlot(0);
+    private final VoltageOut driveOpenLoopRequest = new VoltageOut(0.0);
+    private final VoltageOut turnOpenLoopRequest = new VoltageOut(0.0);
+
+    public ModuleIOTalonFX(ModuleConstants constants) {
+        this.constants = constants;
+        driveMotor = new TalonFX(constants.DriveMotorId, TunerConstants.kCANBusName);
+        turnMotor = new TalonFX(constants.SteerMotorId, TunerConstants.kCANBusName);
+        turnEncoder = new CANcoder(constants.EncoderId, TunerConstants.kCANBusName);
+
+        TalonFXConfiguration driveConfig = new TalonFXConfiguration();
+        driveConfig.Slot0.kP = constants.DriveMotorGains.kP;
+        driveConfig.Slot0.kI = constants.DriveMotorGains.kI;
+        driveConfig.Slot0.kD = constants.DriveMotorGains.kD;
+        driveConfig.Slot0.kS = constants.DriveMotorGains.kS;
+        driveConfig.Slot0.kV = constants.DriveMotorGains.kV;
+        driveConfig.MotorOutput.NeutralMode = NeutralModeValue.Brake;
+        driveConfig.MotorOutput.Inverted = constants.DriveMotorInverted
+            ? InvertedValue.Clockwise_Positive
+            : InvertedValue.CounterClockwise_Positive;
+        driveConfig.CurrentLimits.StatorCurrentLimit = constants.SlipCurrent;
+        driveConfig.CurrentLimits.StatorCurrentLimitEnable = true;
+        driveConfig.CurrentLimits.SupplyCurrentLimit = 40.0;
+        driveConfig.CurrentLimits.SupplyCurrentLimitEnable = true;
+        driveMotor.getConfigurator().apply(driveConfig);
+
+        CANcoderConfiguration cancoderConfig = new CANcoderConfiguration();
+        cancoderConfig.MagnetSensor.MagnetOffset = constants.EncoderOffset;
+        cancoderConfig.MagnetSensor.SensorDirection = constants.EncoderInverted
+            ? SensorDirectionValue.Clockwise_Positive
+            : SensorDirectionValue.CounterClockwise_Positive;
+        turnEncoder.getConfigurator().apply(cancoderConfig);
+
+        TalonFXConfiguration turnConfig = new TalonFXConfiguration();
+        turnConfig.Slot0.kP = constants.SteerMotorGains.kP;
+        turnConfig.Slot0.kI = constants.SteerMotorGains.kI;
+        turnConfig.Slot0.kD = constants.SteerMotorGains.kD;
+        turnConfig.Feedback.FeedbackRemoteSensorID = constants.EncoderId;
+        turnConfig.Feedback.FeedbackSensorSource = FeedbackSensorSourceValue.FusedCANcoder;
+        turnConfig.Feedback.RotorToSensorRatio = constants.SteerMotorGearRatio;
+        turnConfig.ClosedLoopGeneral.ContinuousWrap = true;
+        turnConfig.MotorOutput.NeutralMode = NeutralModeValue.Brake;
+        turnConfig.MotorOutput.Inverted = constants.SteerMotorInverted
+            ? InvertedValue.Clockwise_Positive
+            : InvertedValue.CounterClockwise_Positive;
+        turnConfig.CurrentLimits.SupplyCurrentLimit = 20.0;
+        turnConfig.CurrentLimits.SupplyCurrentLimitEnable = true;
+        turnMotor.getConfigurator().apply(turnConfig);
+    }
+
+    @Override
+    public void updateInputs(ModuleIOInputs inputs) {
+        inputs.driveConnected = true;
+        inputs.drivePositionRad = Units.rotationsToRadians(driveMotor.getPosition().getValueAsDouble())
+            / constants.DriveMotorGearRatio;
+        inputs.driveVelocityRadPerSec = Units.rotationsToRadians(driveMotor.getVelocity().getValueAsDouble())
+            / constants.DriveMotorGearRatio;
+        inputs.driveAppliedVolts = driveMotor.getMotorVoltage().getValueAsDouble();
+        inputs.driveCurrentAmps = driveMotor.getSupplyCurrent().getValueAsDouble();
+
+        inputs.turnConnected = true;
+        inputs.turnEncoderConnected = true;
+        inputs.turnAbsolutePosition = Rotation2d.fromRotations(turnEncoder.getAbsolutePosition().getValueAsDouble());
+        inputs.turnPosition = Rotation2d.fromRotations(turnMotor.getPosition().getValueAsDouble());
+        inputs.turnVelocityRadPerSec = turnMotor.getVelocity().getValueAsDouble() * 2.0 * Math.PI;
+        inputs.turnAppliedVolts = turnMotor.getMotorVoltage().getValueAsDouble();
+        inputs.turnCurrentAmps = turnMotor.getSupplyCurrent().getValueAsDouble();
+    }
+
+    @Override
+    public void setDriveOpenLoop(double outputVolts) {
+        driveMotor.setControl(driveOpenLoopRequest.withOutput(outputVolts));
+    }
+
+    @Override
+    public void setTurnOpenLoop(double outputVolts) {
+        turnMotor.setControl(turnOpenLoopRequest.withOutput(outputVolts));
+    }
+
+    @Override
+    public void setDriveVelocity(double velocityRadPerSec) {
+        double motorRotationsPerSecond = Units.radiansToRotations(velocityRadPerSec)
+            * constants.DriveMotorGearRatio;
+        driveMotor.setControl(driveVelocityRequest.withVelocity(motorRotationsPerSecond));
+    }
+
+    @Override
+    public void setTurnPosition(Rotation2d rotation) {
+        turnMotor.setControl(turnPositionRequest.withPosition(rotation.getRotations()));
+    }
+
+    @Override
+    public void stop() {
+        driveMotor.stopMotor();
+        turnMotor.stopMotor();
+    }
+}
+"""
+
+_AK_MODULE_IO_SIM_JAVA = """\
+package frc.robot.subsystems.drive;
+
+import edu.wpi.first.math.geometry.Rotation2d;
+import edu.wpi.first.wpilibj.Timer;
+import frc.robot.generated.TunerConstants;
+import frc.robot.generated.TunerConstants.ModuleConstants;
+
+/** Lightweight simulated module IO for desktop testing. */
+public class ModuleIOSim implements ModuleIO {
+    private final ModuleConstants constants;
+    private double drivePositionRad = 0.0;
+    private double driveVelocityRadPerSec = 0.0;
+    private Rotation2d turnPosition = Rotation2d.kZero;
+    private double turnVelocityRadPerSec = 0.0;
+    private double lastTimestamp = Timer.getFPGATimestamp();
+
+    public ModuleIOSim(ModuleConstants constants) {
+        this.constants = constants;
+    }
+
+    @Override
+    public void updateInputs(ModuleIOInputs inputs) {
+        double now = Timer.getFPGATimestamp();
+        double dt = Math.max(0.0, now - lastTimestamp);
+        lastTimestamp = now;
+
+        drivePositionRad += driveVelocityRadPerSec * dt;
+        turnPosition = turnPosition.plus(new Rotation2d(turnVelocityRadPerSec * dt));
+
+        inputs.driveConnected = true;
+        inputs.drivePositionRad = drivePositionRad;
+        inputs.driveVelocityRadPerSec = driveVelocityRadPerSec;
+        inputs.driveAppliedVolts = 12.0 * driveVelocityRadPerSec
+            / (TunerConstants.kSpeedAt12VoltsMps / constants.WheelRadius);
+        inputs.driveCurrentAmps = Math.abs(inputs.driveAppliedVolts) * 2.0;
+
+        inputs.turnConnected = true;
+        inputs.turnEncoderConnected = true;
+        inputs.turnAbsolutePosition = turnPosition;
+        inputs.turnPosition = turnPosition;
+        inputs.turnVelocityRadPerSec = turnVelocityRadPerSec;
+        inputs.turnAppliedVolts = 0.0;
+        inputs.turnCurrentAmps = 0.0;
+    }
+
+    @Override
+    public void setDriveOpenLoop(double outputVolts) {
+        driveVelocityRadPerSec = (outputVolts / 12.0) * (TunerConstants.kSpeedAt12VoltsMps / constants.WheelRadius);
+    }
+
+    @Override
+    public void setTurnOpenLoop(double outputVolts) {
+        turnVelocityRadPerSec = outputVolts / 12.0;
+    }
+
+    @Override
+    public void setDriveVelocity(double velocityRadPerSec) {
+        driveVelocityRadPerSec = velocityRadPerSec;
+    }
+
+    @Override
+    public void setTurnPosition(Rotation2d rotation) {
+        turnVelocityRadPerSec = rotation.minus(turnPosition).getRadians() / 0.02;
+        turnPosition = rotation;
+    }
+
+    @Override
+    public void stop() {
+        driveVelocityRadPerSec = 0.0;
+        turnVelocityRadPerSec = 0.0;
+    }
+}
+"""
+
+_AK_MODULE_JAVA = """\
+package frc.robot.subsystems.drive;
+
+import edu.wpi.first.math.kinematics.SwerveModulePosition;
+import edu.wpi.first.math.kinematics.SwerveModuleState;
+import frc.robot.generated.TunerConstants;
+import org.littletonrobotics.junction.Logger;
+
+/** Module wrapper that owns one drive/turn IO implementation. */
+public class Module {
+    private final ModuleIO io;
+    private final ModuleIO.ModuleIOInputs inputs = new ModuleIO.ModuleIOInputs();
+    private final int index;
+    private final TunerConstants.ModuleConstants constants;
+
+    public Module(ModuleIO io, int index, TunerConstants.ModuleConstants constants) {
+        this.io = io;
+        this.index = index;
+        this.constants = constants;
+    }
+
+    public void periodic() {
+        io.updateInputs(inputs);
+        Logger.recordOutput("Drive/Module" + index + "/DrivePositionRad", inputs.drivePositionRad);
+        Logger.recordOutput("Drive/Module" + index + "/DriveVelocityRadPerSec", inputs.driveVelocityRadPerSec);
+        Logger.recordOutput("Drive/Module" + index + "/TurnPositionDeg", inputs.turnPosition.getDegrees());
+    }
+
+    public SwerveModuleState getState() {
+        return new SwerveModuleState(inputs.driveVelocityRadPerSec * constants.WheelRadius, inputs.turnPosition);
+    }
+
+    public SwerveModulePosition getPosition() {
+        return new SwerveModulePosition(inputs.drivePositionRad * constants.WheelRadius, inputs.turnPosition);
+    }
+
+    public void runSetpoint(SwerveModuleState setpoint) {
+        SwerveModuleState optimized = SwerveModuleState.optimize(setpoint, inputs.turnPosition);
+        io.setDriveVelocity(optimized.speedMetersPerSecond / constants.WheelRadius);
+        io.setTurnPosition(optimized.angle);
+        Logger.recordOutput("Drive/Module" + index + "/SetpointSpeedMps", optimized.speedMetersPerSecond);
+        Logger.recordOutput("Drive/Module" + index + "/SetpointAngleDeg", optimized.angle.getDegrees());
+    }
+
+    public void stop() {
+        io.stop();
+    }
+}
+"""
+
+_AK_DRIVE_JAVA = """\
+package frc.robot.subsystems.drive;
+
+import com.pathplanner.lib.auto.AutoBuilder;
+import com.pathplanner.lib.config.ModuleConfig;
+import com.pathplanner.lib.config.PIDConstants;
+import com.pathplanner.lib.config.RobotConfig;
+import com.pathplanner.lib.controllers.PPHolonomicDriveController;
+import edu.wpi.first.math.Matrix;
+import edu.wpi.first.math.estimator.SwerveDrivePoseEstimator;
+import edu.wpi.first.math.geometry.Pose2d;
+import edu.wpi.first.math.geometry.Rotation2d;
+import edu.wpi.first.math.geometry.Translation2d;
+import edu.wpi.first.math.kinematics.ChassisSpeeds;
+import edu.wpi.first.math.kinematics.SwerveDriveKinematics;
+import edu.wpi.first.math.kinematics.SwerveModulePosition;
+import edu.wpi.first.math.kinematics.SwerveModuleState;
+import edu.wpi.first.math.numbers.N1;
+import edu.wpi.first.math.numbers.N3;
+import edu.wpi.first.math.system.plant.DCMotor;
+import edu.wpi.first.wpilibj.DriverStation;
+import edu.wpi.first.wpilibj.DriverStation.Alliance;
+import edu.wpi.first.wpilibj2.command.SubsystemBase;
+import frc.robot.generated.TunerConstants;
+import org.littletonrobotics.junction.Logger;
+
+/** AdvantageKit-style drive subsystem using IO layers for TalonFX swerve hardware. */
+public class Drive extends SubsystemBase {
+    private static final double ROBOT_MASS_KG = 56.7;
+    private static final double ROBOT_MOI = 5.0;
+    private static final double WHEEL_COF = 1.2;
+    private static final PIDConstants TRANSLATION_PID = new PIDConstants(5.0, 0.0, 0.0);
+    private static final PIDConstants ROTATION_PID = new PIDConstants(5.0, 0.0, 0.0);
+
+    public static final double DRIVE_BASE_RADIUS = Math.max(
+        Math.max(
+            Math.hypot(TunerConstants.FrontLeft.LocationX, TunerConstants.FrontLeft.LocationY),
+            Math.hypot(TunerConstants.FrontRight.LocationX, TunerConstants.FrontRight.LocationY)),
+        Math.max(
+            Math.hypot(TunerConstants.BackLeft.LocationX, TunerConstants.BackLeft.LocationY),
+            Math.hypot(TunerConstants.BackRight.LocationX, TunerConstants.BackRight.LocationY)));
+
+    private static final SwerveDriveKinematics KINEMATICS = new SwerveDriveKinematics(getModuleTranslations());
+
+    private static final RobotConfig PP_CONFIG = new RobotConfig(
+        ROBOT_MASS_KG,
+        ROBOT_MOI,
+        new ModuleConfig(
+            TunerConstants.FrontLeft.WheelRadius,
+            TunerConstants.kSpeedAt12VoltsMps,
+            WHEEL_COF,
+            DCMotor.getKrakenX60Foc(1).withReduction(TunerConstants.FrontLeft.DriveMotorGearRatio),
+            TunerConstants.FrontLeft.SlipCurrent,
+            1),
+        getModuleTranslations());
+
+    private final GyroIO gyroIO;
+    private final GyroIO.GyroIOInputs gyroInputs = new GyroIO.GyroIOInputs();
+    private final Module[] modules = new Module[4];
+    private final SwerveDrivePoseEstimator poseEstimator;
+    private Rotation2d rawGyroRotation = Rotation2d.kZero;
+
+    public Drive(
+        GyroIO gyroIO,
+        ModuleIO frontLeftIO,
+        ModuleIO frontRightIO,
+        ModuleIO backLeftIO,
+        ModuleIO backRightIO
+    ) {
+        this.gyroIO = gyroIO;
+        modules[0] = new Module(frontLeftIO, 0, TunerConstants.FrontLeft);
+        modules[1] = new Module(frontRightIO, 1, TunerConstants.FrontRight);
+        modules[2] = new Module(backLeftIO, 2, TunerConstants.BackLeft);
+        modules[3] = new Module(backRightIO, 3, TunerConstants.BackRight);
+
+        poseEstimator = new SwerveDrivePoseEstimator(
+            KINEMATICS,
+            rawGyroRotation,
+            getModulePositions(),
+            Pose2d.kZero);
+
+        AutoBuilder.configure(
+            this::getPose,
+            this::setPose,
+            this::getChassisSpeeds,
+            this::runVelocity,
+            new PPHolonomicDriveController(TRANSLATION_PID, ROTATION_PID),
+            PP_CONFIG,
+            () -> DriverStation.getAlliance().orElse(Alliance.Blue) == Alliance.Red,
+            this);
+    }
+
+    @Override
+    public void periodic() {
+        gyroIO.updateInputs(gyroInputs);
+        for (Module module : modules) {
+            module.periodic();
+        }
+
+        if (gyroInputs.connected) {
+            rawGyroRotation = gyroInputs.yawPosition;
+        } else {
+            rawGyroRotation = rawGyroRotation.plus(Rotation2d.fromRadians(getChassisSpeeds().omegaRadiansPerSecond * 0.02));
+        }
+
+        poseEstimator.update(rawGyroRotation, getModulePositions());
+
+        Logger.recordOutput("Drive/GyroConnected", gyroInputs.connected);
+        Logger.recordOutput("Drive/GyroYawDeg", rawGyroRotation.getDegrees());
+        Logger.recordOutput("Odometry/Robot", getPose());
+        Logger.recordOutput("SwerveStates/Measured", getModuleStates());
+    }
+
+    public void runVelocity(ChassisSpeeds speeds) {
+        SwerveModuleState[] setpoints = KINEMATICS.toSwerveModuleStates(speeds);
+        SwerveDriveKinematics.desaturateWheelSpeeds(setpoints, TunerConstants.kSpeedAt12VoltsMps);
+        for (int i = 0; i < modules.length; i++) {
+            modules[i].runSetpoint(setpoints[i]);
+        }
+    }
+
+    public void stop() {
+        for (Module module : modules) {
+            module.stop();
+        }
+    }
+
+    public Pose2d getPose() {
+        return poseEstimator.getEstimatedPosition();
+    }
+
+    public Rotation2d getRotation() {
+        return rawGyroRotation;
+    }
+
+    public void setPose(Pose2d pose) {
+        poseEstimator.resetPosition(rawGyroRotation, getModulePositions(), pose);
+    }
+
+    public void addVisionMeasurement(
+        Pose2d visionRobotPoseMeters,
+        double timestampSeconds,
+        Matrix<N3, N1> visionMeasurementStdDevs
+    ) {
+        poseEstimator.addVisionMeasurement(visionRobotPoseMeters, timestampSeconds, visionMeasurementStdDevs);
+    }
+
+    public ChassisSpeeds getChassisSpeeds() {
+        return KINEMATICS.toChassisSpeeds(getModuleStates());
+    }
+
+    public void zeroGyro() {
+        gyroIO.zero();
+        rawGyroRotation = Rotation2d.kZero;
+    }
+
+    public double getMaxLinearSpeedMetersPerSec() {
+        return TunerConstants.kSpeedAt12VoltsMps;
+    }
+
+    public double getMaxAngularSpeedRadPerSec() {
+        return TunerConstants.kSpeedAt12VoltsMps / DRIVE_BASE_RADIUS;
+    }
+
+    private SwerveModuleState[] getModuleStates() {
+        SwerveModuleState[] states = new SwerveModuleState[modules.length];
+        for (int i = 0; i < modules.length; i++) {
+            states[i] = modules[i].getState();
+        }
+        return states;
+    }
+
+    private SwerveModulePosition[] getModulePositions() {
+        SwerveModulePosition[] positions = new SwerveModulePosition[modules.length];
+        for (int i = 0; i < modules.length; i++) {
+            positions[i] = modules[i].getPosition();
+        }
+        return positions;
+    }
+
+    public static Translation2d[] getModuleTranslations() {
+        return new Translation2d[] {
+            new Translation2d(TunerConstants.FrontLeft.LocationX, TunerConstants.FrontLeft.LocationY),
+            new Translation2d(TunerConstants.FrontRight.LocationX, TunerConstants.FrontRight.LocationY),
+            new Translation2d(TunerConstants.BackLeft.LocationX, TunerConstants.BackLeft.LocationY),
+            new Translation2d(TunerConstants.BackRight.LocationX, TunerConstants.BackRight.LocationY)
+        };
+    }
+}
+"""
+
+_AK_DRIVE_COMMANDS_JAVA = """\
+package frc.robot.commands;
+
+import edu.wpi.first.math.MathUtil;
+import edu.wpi.first.math.geometry.Rotation2d;
+import edu.wpi.first.math.kinematics.ChassisSpeeds;
+import edu.wpi.first.wpilibj.DriverStation;
+import edu.wpi.first.wpilibj.DriverStation.Alliance;
+import edu.wpi.first.wpilibj2.command.Command;
+import frc.robot.Constants.OperatorConstants;
+import frc.robot.subsystems.drive.Drive;
+import java.util.function.DoubleSupplier;
+
+/** Teleop drive commands inspired by the AdvantageKit swerve templates. */
+public final class DriveCommands {
+    private DriveCommands() {}
+
+    public static Command joystickDrive(
+        Drive drive,
+        DoubleSupplier xSupplier,
+        DoubleSupplier ySupplier,
+        DoubleSupplier omegaSupplier
+    ) {
+        return drive.run(() -> {
+            double x = MathUtil.applyDeadband(xSupplier.getAsDouble(), OperatorConstants.DEADBAND);
+            double y = MathUtil.applyDeadband(ySupplier.getAsDouble(), OperatorConstants.DEADBAND);
+            double omega = MathUtil.applyDeadband(omegaSupplier.getAsDouble(), OperatorConstants.DEADBAND);
+
+            Rotation2d fieldFrame = drive.getRotation();
+            if (DriverStation.getAlliance().orElse(Alliance.Blue) == Alliance.Red) {
+                fieldFrame = fieldFrame.plus(Rotation2d.fromRadians(Math.PI));
+            }
+
+            drive.runVelocity(
+                ChassisSpeeds.fromFieldRelativeSpeeds(
+                    x * drive.getMaxLinearSpeedMetersPerSec(),
+                    y * drive.getMaxLinearSpeedMetersPerSec(),
+                    omega * drive.getMaxAngularSpeedRadPerSec(),
+                    fieldFrame));
+        }).withName("DriveJoystick");
+    }
+}
+"""
+
+_AK_VISION_CONSTANTS_JAVA = """\
+package frc.robot.subsystems.vision;
+
+import edu.wpi.first.math.geometry.Rotation3d;
+import edu.wpi.first.math.geometry.Transform3d;
+
+/** PhotonVision configuration for the generated swerve project. */
+public final class VisionConstants {
+    public static final String camera0Name = "front-left";
+    public static final String camera1Name = "front-right";
+
+    public static final Transform3d robotToCamera0 =
+        new Transform3d(0.28, 0.22, 0.25, new Rotation3d(0.0, -0.30, 0.35));
+    public static final Transform3d robotToCamera1 =
+        new Transform3d(0.28, -0.22, 0.25, new Rotation3d(0.0, -0.30, -0.35));
+
+    public static final double maxAmbiguity = 0.3;
+    public static final double maxZError = 0.75;
+    public static final double linearStdDevBaseline = 0.02;
+    public static final double angularStdDevBaseline = 0.06;
+    public static final double[] cameraStdDevFactors = new double[] {1.0, 1.0};
+    public static final double linearStdDevMegatag2Factor = 0.5;
+    public static final double angularStdDevMegatag2Factor = Double.POSITIVE_INFINITY;
+
+    private VisionConstants() {}
+}
+"""
+
+_AK_VISION_IO_JAVA = """\
+package frc.robot.subsystems.vision;
+
+import edu.wpi.first.math.geometry.Pose3d;
+import edu.wpi.first.math.geometry.Rotation2d;
+
+/** Vision IO abstraction patterned after the AdvantageKit vision template. */
+public interface VisionIO {
+
+    class VisionIOInputs {
+        public boolean connected = false;
+        public TargetObservation latestTargetObservation = new TargetObservation(Rotation2d.kZero, Rotation2d.kZero);
+        public PoseObservation[] poseObservations = new PoseObservation[0];
+        public int[] tagIds = new int[0];
+    }
+
+    record TargetObservation(Rotation2d tx, Rotation2d ty) {}
+
+    record PoseObservation(
+        double timestamp,
+        Pose3d pose,
+        double ambiguity,
+        int tagCount,
+        double averageTagDistance,
+        PoseObservationType type
+    ) {}
+
+    enum PoseObservationType {
+        MEGATAG_1,
+        MEGATAG_2,
+        PHOTONVISION
+    }
+
+    default void updateInputs(VisionIOInputs inputs) {}
+}
+"""
+
+_AK_VISION_IO_PHOTON_JAVA = """\
+package frc.robot.subsystems.vision;
+
+import edu.wpi.first.math.geometry.Pose3d;
+import edu.wpi.first.math.geometry.Rotation2d;
+import edu.wpi.first.math.geometry.Transform3d;
+import frc.robot.FieldConstants;
+import java.util.LinkedHashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Set;
+import org.photonvision.PhotonCamera;
+
+/** PhotonVision-backed vision IO for real cameras. */
+public class VisionIOPhotonVision implements VisionIO {
+    protected final PhotonCamera camera;
+    protected final Transform3d robotToCamera;
+
+    public VisionIOPhotonVision(String name, Transform3d robotToCamera) {
+        camera = new PhotonCamera(name);
+        this.robotToCamera = robotToCamera;
+    }
+
+    @Override
+    public void updateInputs(VisionIOInputs inputs) {
+        inputs.connected = camera.isConnected();
+        Set<Integer> tagIds = new LinkedHashSet<>();
+        List<PoseObservation> poseObservations = new LinkedList<>();
+
+        for (var result : camera.getAllUnreadResults()) {
+            if (result.hasTargets()) {
+                inputs.latestTargetObservation = new TargetObservation(
+                    Rotation2d.fromDegrees(result.getBestTarget().getYaw()),
+                    Rotation2d.fromDegrees(result.getBestTarget().getPitch()));
+            } else {
+                inputs.latestTargetObservation = new TargetObservation(Rotation2d.kZero, Rotation2d.kZero);
+            }
+
+            if (result.multitagResult.isPresent()) {
+                var multitagResult = result.multitagResult.get();
+                Transform3d fieldToCamera = multitagResult.estimatedPose.best;
+                Transform3d fieldToRobot = fieldToCamera.plus(robotToCamera.inverse());
+                Pose3d robotPose = new Pose3d(fieldToRobot.getTranslation(), fieldToRobot.getRotation());
+
+                double totalTagDistance = 0.0;
+                for (var target : result.targets) {
+                    totalTagDistance += target.bestCameraToTarget.getTranslation().getNorm();
+                    tagIds.add(target.fiducialId);
+                }
+                tagIds.addAll(multitagResult.fiducialIDsUsed);
+
+                poseObservations.add(new PoseObservation(
+                    result.getTimestampSeconds(),
+                    robotPose,
+                    multitagResult.estimatedPose.ambiguity,
+                    multitagResult.fiducialIDsUsed.size(),
+                    result.targets.isEmpty() ? 0.0 : totalTagDistance / result.targets.size(),
+                    PoseObservationType.PHOTONVISION));
+            } else if (!result.targets.isEmpty()) {
+                var target = result.targets.get(0);
+                var tagPose = FieldConstants.getAprilTagLayout().getTagPose(target.fiducialId);
+                if (tagPose.isPresent()) {
+                    Transform3d fieldToTarget = new Transform3d(tagPose.get().getTranslation(), tagPose.get().getRotation());
+                    Transform3d fieldToCamera = fieldToTarget.plus(target.bestCameraToTarget.inverse());
+                    Transform3d fieldToRobot = fieldToCamera.plus(robotToCamera.inverse());
+                    Pose3d robotPose = new Pose3d(fieldToRobot.getTranslation(), fieldToRobot.getRotation());
+
+                    tagIds.add(target.fiducialId);
+                    poseObservations.add(new PoseObservation(
+                        result.getTimestampSeconds(),
+                        robotPose,
+                        target.poseAmbiguity,
+                        1,
+                        target.bestCameraToTarget.getTranslation().getNorm(),
+                        PoseObservationType.PHOTONVISION));
+                }
+            }
+        }
+
+        inputs.poseObservations = poseObservations.toArray(new PoseObservation[0]);
+        inputs.tagIds = tagIds.stream().mapToInt(Integer::intValue).toArray();
+    }
+}
+"""
+
+_AK_VISION_IO_PHOTON_SIM_JAVA = """\
+package frc.robot.subsystems.vision;
+
+import edu.wpi.first.math.geometry.Pose2d;
+import edu.wpi.first.math.geometry.Rotation2d;
+import edu.wpi.first.math.geometry.Transform3d;
+import frc.robot.FieldConstants;
+import java.util.function.Supplier;
+import org.photonvision.simulation.PhotonCameraSim;
+import org.photonvision.simulation.SimCameraProperties;
+import org.photonvision.simulation.VisionSystemSim;
+
+/** PhotonVision simulator wiring for desktop AdvantageKit-style testing. */
+public class VisionIOPhotonVisionSim extends VisionIOPhotonVision {
+    private static VisionSystemSim visionSim;
+
+    private final Supplier<Pose2d> poseSupplier;
+    private final PhotonCameraSim cameraSim;
+
+    public VisionIOPhotonVisionSim(String name, Transform3d robotToCamera, Supplier<Pose2d> poseSupplier) {
+        super(name, robotToCamera);
+        this.poseSupplier = poseSupplier;
+
+        if (visionSim == null) {
+            visionSim = new VisionSystemSim("main");
+            visionSim.addAprilTags(FieldConstants.getAprilTagLayout());
+        }
+
+        SimCameraProperties cameraProperties = new SimCameraProperties();
+        cameraProperties.setCalibration(1280, 720, Rotation2d.fromDegrees(90.0));
+        cameraProperties.setFPS(30.0);
+        cameraSim = new PhotonCameraSim(camera, cameraProperties, FieldConstants.getAprilTagLayout());
+        visionSim.addCamera(cameraSim, robotToCamera);
+    }
+
+    @Override
+    public void updateInputs(VisionIOInputs inputs) {
+        visionSim.update(poseSupplier.get());
+        super.updateInputs(inputs);
+    }
+}
+"""
+
+_AK_VISION_JAVA = """\
+package frc.robot.subsystems.vision;
+
+import static frc.robot.subsystems.vision.VisionConstants.*;
+
+import edu.wpi.first.math.Matrix;
+import edu.wpi.first.math.VecBuilder;
+import edu.wpi.first.math.geometry.Pose2d;
+import edu.wpi.first.math.geometry.Pose3d;
+import edu.wpi.first.math.geometry.Rotation2d;
+import edu.wpi.first.math.numbers.N1;
+import edu.wpi.first.math.numbers.N3;
+import edu.wpi.first.wpilibj.Alert;
+import edu.wpi.first.wpilibj.Alert.AlertType;
+import edu.wpi.first.wpilibj2.command.SubsystemBase;
+import frc.robot.FieldConstants;
+import frc.robot.subsystems.vision.VisionIO.PoseObservationType;
+import java.util.LinkedList;
+import java.util.List;
+import org.littletonrobotics.junction.Logger;
+
+/** Vision subsystem that filters and forwards PhotonVision measurements to the drive estimator. */
+public class Vision extends SubsystemBase {
+    private final VisionConsumer consumer;
+    private final VisionIO[] io;
+    private final VisionIO.VisionIOInputs[] inputs;
+    private final Alert[] disconnectedAlerts;
+
+    public Vision(VisionConsumer consumer, VisionIO... io) {
+        this.consumer = consumer;
+        this.io = io;
+        this.inputs = new VisionIO.VisionIOInputs[io.length];
+        this.disconnectedAlerts = new Alert[io.length];
+
+        for (int i = 0; i < io.length; i++) {
+            inputs[i] = new VisionIO.VisionIOInputs();
+            disconnectedAlerts[i] = new Alert("Vision camera " + i + " is disconnected.", AlertType.kWarning);
+        }
+    }
+
+    public Rotation2d getTargetX(int cameraIndex) {
+        if (cameraIndex < 0 || cameraIndex >= inputs.length) {
+            return Rotation2d.kZero;
+        }
+        return inputs[cameraIndex].latestTargetObservation.tx();
+    }
+
+    @Override
+    public void periodic() {
+        List<Pose3d> allTagPoses = new LinkedList<>();
+        List<Pose3d> allRobotPoses = new LinkedList<>();
+        List<Pose3d> allRobotPosesAccepted = new LinkedList<>();
+        List<Pose3d> allRobotPosesRejected = new LinkedList<>();
+
+        for (int cameraIndex = 0; cameraIndex < io.length; cameraIndex++) {
+            io[cameraIndex].updateInputs(inputs[cameraIndex]);
+            disconnectedAlerts[cameraIndex].set(!inputs[cameraIndex].connected);
+            Logger.recordOutput("Vision/Camera" + cameraIndex + "/Connected", inputs[cameraIndex].connected);
+            Logger.recordOutput("Vision/Camera" + cameraIndex + "/TargetYawDeg", inputs[cameraIndex].latestTargetObservation.tx().getDegrees());
+
+            List<Pose3d> tagPoses = new LinkedList<>();
+            List<Pose3d> robotPoses = new LinkedList<>();
+            List<Pose3d> robotPosesAccepted = new LinkedList<>();
+            List<Pose3d> robotPosesRejected = new LinkedList<>();
+
+            for (int tagId : inputs[cameraIndex].tagIds) {
+                var tagPose = FieldConstants.getAprilTagLayout().getTagPose(tagId);
+                tagPose.ifPresent(tagPoses::add);
+            }
+
+            for (var observation : inputs[cameraIndex].poseObservations) {
+                boolean rejectPose = observation.tagCount() == 0
+                    || (observation.tagCount() == 1 && observation.ambiguity() > maxAmbiguity)
+                    || Math.abs(observation.pose().getZ()) > maxZError
+                    || observation.pose().getX() < 0.0
+                    || observation.pose().getX() > FieldConstants.getAprilTagLayout().getFieldLength()
+                    || observation.pose().getY() < 0.0
+                    || observation.pose().getY() > FieldConstants.getAprilTagLayout().getFieldWidth();
+
+                robotPoses.add(observation.pose());
+                if (rejectPose) {
+                    robotPosesRejected.add(observation.pose());
+                    continue;
+                }
+                robotPosesAccepted.add(observation.pose());
+
+                double stdDevFactor = Math.pow(observation.averageTagDistance(), 2.0)
+                    / Math.max(1, observation.tagCount());
+                double linearStdDev = linearStdDevBaseline * stdDevFactor;
+                double angularStdDev = angularStdDevBaseline * stdDevFactor;
+
+                if (observation.type() == PoseObservationType.MEGATAG_2) {
+                    linearStdDev *= linearStdDevMegatag2Factor;
+                    angularStdDev *= angularStdDevMegatag2Factor;
+                }
+                if (cameraIndex < cameraStdDevFactors.length) {
+                    linearStdDev *= cameraStdDevFactors[cameraIndex];
+                    angularStdDev *= cameraStdDevFactors[cameraIndex];
+                }
+
+                consumer.accept(
+                    observation.pose().toPose2d(),
+                    observation.timestamp(),
+                    VecBuilder.fill(linearStdDev, linearStdDev, angularStdDev));
+            }
+
+            Logger.recordOutput("Vision/Camera" + cameraIndex + "/TagPoses", tagPoses.toArray(new Pose3d[0]));
+            Logger.recordOutput("Vision/Camera" + cameraIndex + "/RobotPoses", robotPoses.toArray(new Pose3d[0]));
+            Logger.recordOutput("Vision/Camera" + cameraIndex + "/RobotPosesAccepted", robotPosesAccepted.toArray(new Pose3d[0]));
+            Logger.recordOutput("Vision/Camera" + cameraIndex + "/RobotPosesRejected", robotPosesRejected.toArray(new Pose3d[0]));
+
+            allTagPoses.addAll(tagPoses);
+            allRobotPoses.addAll(robotPoses);
+            allRobotPosesAccepted.addAll(robotPosesAccepted);
+            allRobotPosesRejected.addAll(robotPosesRejected);
+        }
+
+        Logger.recordOutput("Vision/Summary/TagPoses", allTagPoses.toArray(new Pose3d[0]));
+        Logger.recordOutput("Vision/Summary/RobotPoses", allRobotPoses.toArray(new Pose3d[0]));
+        Logger.recordOutput("Vision/Summary/RobotPosesAccepted", allRobotPosesAccepted.toArray(new Pose3d[0]));
+        Logger.recordOutput("Vision/Summary/RobotPosesRejected", allRobotPosesRejected.toArray(new Pose3d[0]));
+    }
+
+    @FunctionalInterface
+    public interface VisionConsumer {
+        void accept(
+            Pose2d visionRobotPoseMeters,
+            double timestampSeconds,
+            Matrix<N3, N1> visionMeasurementStdDevs
+        );
+    }
+}
+"""
+
+_AK_ROBOT_CONTAINER_JAVA = """\
+package frc.robot;
+
+import static frc.robot.subsystems.vision.VisionConstants.*;
+
+import com.pathplanner.lib.auto.AutoBuilder;
+import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
+import edu.wpi.first.wpilibj2.command.Command;
+import edu.wpi.first.wpilibj2.command.button.CommandXboxController;
+import frc.robot.Constants.OperatorConstants;
+import frc.robot.autos.AutoRoutines;
+import frc.robot.commands.DriveCommands;
+import frc.robot.generated.TunerConstants;
+import frc.robot.subsystems.drive.Drive;
+import frc.robot.subsystems.drive.GyroIO;
+import frc.robot.subsystems.drive.GyroIOPigeon2;
+import frc.robot.subsystems.drive.ModuleIO;
+import frc.robot.subsystems.drive.ModuleIOSim;
+import frc.robot.subsystems.drive.ModuleIOTalonFX;
+import frc.robot.subsystems.intake.Intake;
+import frc.robot.subsystems.intake.IntakeIO;
+import frc.robot.subsystems.intake.IntakeIOSim;
+import frc.robot.subsystems.intake.IntakeIOTalonFX;
+import frc.robot.subsystems.lift.Lift;
+import frc.robot.subsystems.lift.LiftIO;
+import frc.robot.subsystems.lift.LiftIOSim;
+import frc.robot.subsystems.lift.LiftIOTalonFX;
+import frc.robot.subsystems.scoring.Scoring;
+import frc.robot.subsystems.scoring.ScoringIO;
+import frc.robot.subsystems.scoring.ScoringIOSim;
+import frc.robot.subsystems.scoring.ScoringIOTalonFX;
+import frc.robot.subsystems.vision.Vision;
+import frc.robot.subsystems.vision.VisionIO;
+import frc.robot.subsystems.vision.VisionIOPhotonVision;
+import frc.robot.subsystems.vision.VisionIOPhotonVisionSim;
+import org.littletonrobotics.junction.networktables.LoggedDashboardChooser;
+
+/** Wires the hybrid AdvantageKit TalonFX swerve and PhotonVision project structure. */
+public class RobotContainer {
+    private final Drive drive;
+    private final Vision vision;
+    private final Intake intake;
+    private final Scoring scoring;
+    private final Lift lift;
+
+    private final CommandXboxController driver = new CommandXboxController(OperatorConstants.DRIVER_PORT);
+    private final CommandXboxController operator = new CommandXboxController(OperatorConstants.OPERATOR_PORT);
+    private final LoggedDashboardChooser<Command> autoChooser;
+
+    public RobotContainer() {
+        switch (Constants.currentMode) {
+            case REAL -> {
+                drive = new Drive(
+                    new GyroIOPigeon2(),
+                    new ModuleIOTalonFX(TunerConstants.FrontLeft),
+                    new ModuleIOTalonFX(TunerConstants.FrontRight),
+                    new ModuleIOTalonFX(TunerConstants.BackLeft),
+                    new ModuleIOTalonFX(TunerConstants.BackRight));
+                vision = new Vision(
+                    drive::addVisionMeasurement,
+                    new VisionIOPhotonVision(camera0Name, robotToCamera0),
+                    new VisionIOPhotonVision(camera1Name, robotToCamera1));
+                intake = new Intake(new IntakeIOTalonFX());
+                scoring = new Scoring(new ScoringIOTalonFX());
+                lift = new Lift(new LiftIOTalonFX());
+            }
+            case SIM -> {
+                drive = new Drive(
+                    new GyroIO() {},
+                    new ModuleIOSim(TunerConstants.FrontLeft),
+                    new ModuleIOSim(TunerConstants.FrontRight),
+                    new ModuleIOSim(TunerConstants.BackLeft),
+                    new ModuleIOSim(TunerConstants.BackRight));
+                vision = new Vision(
+                    drive::addVisionMeasurement,
+                    new VisionIOPhotonVisionSim(camera0Name, robotToCamera0, drive::getPose),
+                    new VisionIOPhotonVisionSim(camera1Name, robotToCamera1, drive::getPose));
+                intake = new Intake(new IntakeIOSim());
+                scoring = new Scoring(new ScoringIOSim());
+                lift = new Lift(new LiftIOSim());
+            }
+            default -> {
+                drive = new Drive(new GyroIO() {}, new ModuleIO() {}, new ModuleIO() {}, new ModuleIO() {}, new ModuleIO() {});
+                vision = new Vision(drive::addVisionMeasurement, new VisionIO() {}, new VisionIO() {});
+                intake = new Intake(new IntakeIO() {});
+                scoring = new Scoring(new ScoringIO() {});
+                lift = new Lift(new LiftIO() {});
+            }
+        }
+
+        AutoRoutines.register(drive, intake, scoring, lift);
+        autoChooser = new LoggedDashboardChooser<>("Auto Choices", AutoBuilder.buildAutoChooser());
+        autoChooser.addOption("SafeAutoScore Sequence", AutoRoutines.safeAutoScore(scoring, intake));
+
+        configureDefaultCommands();
+        configureButtonBindings();
+        SmartDashboard.putBoolean("HUBActive", true);
+    }
+
+    private void configureDefaultCommands() {
+        drive.setDefaultCommand(
+            DriveCommands.joystickDrive(
+                drive,
+                () -> -driver.getLeftY(),
+                () -> -driver.getLeftX(),
+                () -> -driver.getRightX()));
+    }
+
+    private void configureButtonBindings() {
+        driver.rightBumper().whileTrue(intake.intakeCommand());
+        driver.leftBumper().whileTrue(intake.ejectCommand());
+        driver.rightTrigger(0.5).whileTrue(scoring.scoreCommand());
+        driver.y().onTrue(drive.runOnce(drive::zeroGyro));
+
+        operator.a().onTrue(lift.climbToLevel(1));
+        operator.b().onTrue(lift.climbToLevel(2));
+        operator.x().onTrue(lift.climbToLevel(3));
+        operator.y().onTrue(lift.retractCommand());
+        operator.leftBumper().whileTrue(scoring.spinUpCommand());
+    }
+
+    public Command getAutonomousCommand() {
+        return autoChooser.get();
+    }
+}
+"""
+
+_AK_AUTO_ROUTINES_JAVA = """\
+package frc.robot.autos;
+
+import com.pathplanner.lib.auto.NamedCommands;
+import edu.wpi.first.wpilibj2.command.Command;
+import edu.wpi.first.wpilibj2.command.Commands;
+import frc.robot.subsystems.drive.Drive;
+import frc.robot.subsystems.intake.Intake;
+import frc.robot.subsystems.lift.Lift;
+import frc.robot.subsystems.scoring.Scoring;
+
+/** Registers named commands for PathPlanner while keeping a simple fallback autonomous sequence. */
+public final class AutoRoutines {
+    private AutoRoutines() {}
+
+    public static void register(
+        Drive drive,
+        Intake intake,
+        Scoring scoring,
+        Lift lift
+    ) {
+        NamedCommands.registerCommand("Intake", intake.intakeCommand());
+        NamedCommands.registerCommand("Score", scoring.scoreCommand());
+        NamedCommands.registerCommand("SpinUp", scoring.spinUpCommand());
+        NamedCommands.registerCommand("ClimbL1", lift.climbToLevel(1));
+        NamedCommands.registerCommand("ClimbL2", lift.climbToLevel(2));
+        NamedCommands.registerCommand("ClimbL3", lift.climbToLevel(3));
+        NamedCommands.registerCommand("Retract", lift.retractCommand());
+        NamedCommands.registerCommand("StopDrive", Commands.runOnce(drive::stop, drive));
+    }
+
+    public static Command safeAutoScore(Scoring scoring, Intake intake) {
+        return Commands.sequence(
+            scoring.spinUpCommand().withTimeout(0.5),
+            scoring.scoreCommand().withTimeout(3.0),
+            intake.intakeCommand().withTimeout(4.0),
+            scoring.scoreCommand().withTimeout(5.0),
+            Commands.print("[Auto] SafeAutoScore complete"))
+            .withName("SafeAutoScore");
+    }
+}
+"""
+
 def robot_codegen_agent(root: Path, year: str, mechanics: dict) -> dict:
     manual_hash = mechanics["metadata"]["source_manual_hash"]
     manual_ver  = mechanics["metadata"]["manual_version"]
 
     proj = root / "artifacts" / year / "wpilib_project"
     java_root = proj / "src" / "main" / "java" / "frc" / "robot"
-    sub_dir  = java_root / "subsystems"
+    sub_dir = java_root / "subsystems"
+    drive_dir = sub_dir / "drive"
+    vision_dir = sub_dir / "vision"
+    intake_dir = sub_dir / "intake"
+    scoring_dir = sub_dir / "scoring"
+    lift_dir = sub_dir / "lift"
+    generated_dir = java_root / "generated"
+    command_dir = java_root / "commands"
     auto_dir = java_root / "autos"
     vdep_dir = proj / "vendordeps"
-    deploy_dir = proj / "src" / "main" / "deploy" / "pathplanner" / "paths"
+    deploy_root = proj / "src" / "main" / "deploy"
+    deploy_dir = deploy_root / "pathplanner" / "paths"
 
-    for d in [sub_dir, auto_dir, vdep_dir, deploy_dir]:
+    for d in [sub_dir, drive_dir, vision_dir, intake_dir, scoring_dir, lift_dir, generated_dir, command_dir, auto_dir, vdep_dir, deploy_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
     print("  [robot_codegen] generating WPILib 2026 Java project …")
 
     files: dict[Path, str] = {
-        proj / "build.gradle":        _BUILD_GRADLE,
+        proj / "build.gradle":        _AK_BUILD_GRADLE,
         proj / "settings.gradle":     _SETTINGS_GRADLE,
         vdep_dir / "Phoenix6.json":         _VENDORDEP_PHOENIX6,
         vdep_dir / "PathplannerLib.json":   _VENDORDEP_PATHPLANNER,
         vdep_dir / "AdvantageKit.json":     _VENDORDEP_ADVANTAGEKIT,
         vdep_dir / "photonlib.json":        _VENDORDEP_PHOTON,
         java_root / "Main.java":            _MAIN_JAVA,
-        java_root / "Robot.java":           _ROBOT_JAVA,
-        java_root / "Constants.java":       _CONSTANTS_JAVA,
-        java_root / "RobotContainer.java":  _ROBOT_CONTAINER_JAVA,
-        sub_dir / "SwerveModule.java":      _SWERVE_MODULE_JAVA,
-        sub_dir / "DriveSubsystem.java":    _DRIVE_SUBSYSTEM_JAVA,
-        sub_dir / "IntakeSubsystem.java":   _INTAKE_SUBSYSTEM_JAVA,
-        sub_dir / "ScoringSubsystem.java":  _SCORING_SUBSYSTEM_JAVA,
-        sub_dir / "LiftSubsystem.java":     _LIFT_SUBSYSTEM_JAVA,
-        auto_dir / "AutoRoutines.java":     _AUTO_ROUTINES_JAVA,
+        java_root / "Robot.java":           _AK_ROBOT_JAVA,
+        java_root / "Constants.java":       _AK_CONSTANTS_JAVA,
+        java_root / "FieldConstants.java":  _FIELD_CONSTANTS_JAVA,
+        java_root / "RobotContainer.java":  _AK_ROBOT_CONTAINER_JAVA,
+        generated_dir / "TunerConstants.java": _AK_TUNER_CONSTANTS_JAVA,
+        command_dir / "DriveCommands.java": _AK_DRIVE_COMMANDS_JAVA,
+        drive_dir / "GyroIO.java":          _AK_GYRO_IO_JAVA,
+        drive_dir / "GyroIOPigeon2.java":   _AK_GYRO_IO_PIGEON2_JAVA,
+        drive_dir / "ModuleIO.java":        _AK_MODULE_IO_JAVA,
+        drive_dir / "ModuleIOTalonFX.java": _AK_MODULE_IO_TALONFX_JAVA,
+        drive_dir / "ModuleIOSim.java":     _AK_MODULE_IO_SIM_JAVA,
+        drive_dir / "Module.java":          _AK_MODULE_JAVA,
+        drive_dir / "Drive.java":           _AK_DRIVE_JAVA,
+        vision_dir / "VisionConstants.java": _AK_VISION_CONSTANTS_JAVA,
+        vision_dir / "VisionIO.java":        _AK_VISION_IO_JAVA,
+        vision_dir / "VisionIOPhotonVision.java": _AK_VISION_IO_PHOTON_JAVA,
+        vision_dir / "VisionIOPhotonVisionSim.java": _AK_VISION_IO_PHOTON_SIM_JAVA,
+        vision_dir / "Vision.java":         _AK_VISION_JAVA,
+        intake_dir / "IntakeIO.java":       _AK_INTAKE_IO_JAVA,
+        intake_dir / "IntakeIOTalonFX.java": _AK_INTAKE_IO_TALONFX_JAVA,
+        intake_dir / "IntakeIOSim.java":    _AK_INTAKE_IO_SIM_JAVA,
+        intake_dir / "Intake.java":         _AK_INTAKE_JAVA,
+        scoring_dir / "ScoringIO.java":     _AK_SCORING_IO_JAVA,
+        scoring_dir / "ScoringIOTalonFX.java": _AK_SCORING_IO_TALONFX_JAVA,
+        scoring_dir / "ScoringIOSim.java":  _AK_SCORING_IO_SIM_JAVA,
+        scoring_dir / "Scoring.java":       _AK_SCORING_JAVA,
+        lift_dir / "LiftIO.java":           _AK_LIFT_IO_JAVA,
+        lift_dir / "LiftIOTalonFX.java":    _AK_LIFT_IO_TALONFX_JAVA,
+        lift_dir / "LiftIOSim.java":        _AK_LIFT_IO_SIM_JAVA,
+        lift_dir / "Lift.java":             _AK_LIFT_JAVA,
+        auto_dir / "AutoRoutines.java":     _AK_AUTO_ROUTINES_JAVA,
     }
+
+    legacy_paths = [
+        sub_dir / "SwerveModule.java",
+        sub_dir / "DriveSubsystem.java",
+        sub_dir / "IntakeSubsystem.java",
+        sub_dir / "ScoringSubsystem.java",
+        sub_dir / "LiftSubsystem.java",
+        drive_dir / "DriveConstants.java",
+    ]
+    for legacy_path in legacy_paths:
+        if legacy_path.exists():
+            legacy_path.unlink()
 
     # Stub PathPlanner path JSON (team fills in GUI)
     path_json = json.dumps({
@@ -1243,6 +3152,22 @@ def robot_codegen_agent(root: Path, year: str, mechanics: dict) -> dict:
     }, indent=2)
     files[deploy_dir / "SafeAutoScore.path"] = path_json
 
+    apriltag_layout_source = root / "artifacts" / year / "apriltag_field_layout.json"
+    if apriltag_layout_source.exists():
+        apriltag_layout_json = apriltag_layout_source.read_text(encoding="utf-8")
+    else:
+        apriltag_layout_json = json.dumps(
+            {
+                "tags": [],
+                "field": {
+                    "length": round(float(mechanics.get("physics", {}).get("field_length_m", 0.0) or 0.0), 3),
+                    "width": round(float(mechanics.get("physics", {}).get("field_width_m", 0.0) or 0.0), 3),
+                },
+            },
+            indent=2,
+        )
+    files[deploy_root / "apriltag_field_layout.json"] = apriltag_layout_json
+
     for path, content in files.items():
         write_text(path, content)
 
@@ -1254,10 +3179,12 @@ def robot_codegen_agent(root: Path, year: str, mechanics: dict) -> dict:
         "warnings": [
             "Verify GradleRIO version against https://github.com/wpilibsuite/allwpilib/releases",
             "Verify all vendordep versions against official vendor release pages before deploy.",
-            "SwerveModule CANcoder offsets default to 0.0 — calibrate on real robot.",
+            "TunerConstants encoder offsets default to 0.0 - calibrate them from CTRE Tuner X before enabling closed-loop steering.",
             "TEAM_NUMBER in Constants.java is 9999 — update before competition.",
-            "PathPlanner RobotConfig must be exported from PathPlanner GUI (File > Export Robot Config).",
-            "AprilTagField layout uses k2026Reefscape — verify this matches the actual 2026 field.",
+            "Generated project now follows an AdvantageKit-style layout with generated/TunerConstants.java plus drive, vision, intake, scoring, and lift IO packages.",
+            "PhotonVision camera names and robot-to-camera transforms in VisionConstants.java must match the coprocessor configuration and robot geometry.",
+            "FieldConstants.java is generated with blue/red alliance helpers and deploy-first AprilTag layout loading.",
+            "apriltag_field_layout.json is deployed with the project; populate it from the field dimension drawing so robot code does not rely solely on the built-in WPILib resource.",
         ],
         "citations": [
             {"section_id": "section-6", "page": 43, "clause_text": "TOWER scoring criteria"},
@@ -1266,7 +3193,7 @@ def robot_codegen_agent(root: Path, year: str, mechanics: dict) -> dict:
         ],
         "metadata": base_meta("build", year, manual_hash, manual_ver,
                               "robot_codegen", ["anthropic/claude-api", "karpathy/claude"]),
-        "subsystems": ["DriveSubsystem (swerve)", "IntakeSubsystem (fuel)", "ScoringSubsystem (flywheel)", "LiftSubsystem (tower)"],
+        "subsystems": ["Drive (AdvantageKit-style swerve)", "Vision (PhotonVision pose fusion)", "Intake (IO-layer)", "Scoring (IO-layer)", "Lift (IO-layer)"],
         "vendor_libraries": ["AdvantageKit", "CTRE Phoenix v6", "PathplannerLib", "photonlib"],
     }
     print(f"  [robot_codegen] done — {len(files)} files written")

@@ -1,6 +1,6 @@
 # FRC Megaproject
 
-An AI-agent pipeline for FIRST Robotics Competition (FRC) game analysis, robot code generation, scouting, and simulation. Given a game manual PDF, the pipeline extracts rules, models game mechanics, synthesizes strategy, generates WPILib robot code, runs Monte Carlo simulations, and produces a scouting app — all in a single orchestrated run.
+An AI-agent pipeline for FIRST Robotics Competition (FRC) game analysis, robot code generation, scouting, and simulation. Given a game manual PDF and a field-dimension drawing PDF, the pipeline extracts rules, builds field-layout references, models game mechanics, synthesizes strategy, generates WPILib robot code, runs Monte Carlo simulations, and produces a scouting app — all in a single orchestrated run.
 
 The current strategy stack includes a TideSim-style 2D architecture search loop: human 3v3 playtests and RL/self-play sweeps can emit `sim_arch_feedback.json`, and that artifact feeds back into the manual insight analysis to rerank strategy candidates when the contract passes validation.
 
@@ -9,8 +9,10 @@ The current strategy stack includes a TideSim-style 2D architecture search loop:
 ## Pipeline Overview
 
 ```
-PDF Manual
+PDF Manual + Field Dimension Drawing
     └─> [1] PDF Rule Extraction        → rules.json
+                                            field_layout_reference.json
+                                            apriltag_field_layout.json
             ├─> [2a] Consolidated FRC Manual Insight Analysis  → strategy_hypotheses.md
             │                                                     manual_insight_packet.json
             │                                                     manual_insight_analysis.md
@@ -119,6 +121,8 @@ All outputs are versioned under `/artifacts/{game_year}/`:
 | Artifact | Produced by | Consumed by |
 |---|---|---|
 | `rules.json` | `pdf_extractor` | `mechanic_analyst`, `strategy_architect` |
+| `field_layout_reference.json` | `pdf_extractor` | `mechanic_analyst`, `sim_engineer`, `mc_simulator`, `robot_codegen` |
+| `apriltag_field_layout.json` | `pdf_extractor` | `robot_codegen`, deployed WPILib project |
 | `mechanics.json` | `mechanic_analyst` | `robot_codegen`, `sim_engineer`, `mc_simulator` |
 | `manual_insight_packet.json` | `strategy_architect` | `robot_codegen`, `mc_simulator` |
 | `manual_insight_analysis.md` | `strategy_architect` | Human review, design discussion, drive strategy |
@@ -130,6 +134,26 @@ All outputs are versioned under `/artifacts/{game_year}/`:
 | `validation_report.json` | `qa_validator` | Release decision |
 
 `/context/game_spec.json` is the single shared source of truth for game semantics across all parallel agents. Parallel agents must not write to it directly — all updates go through the orchestrator merge step.
+
+## Required Inputs
+
+Each game year requires both source PDFs under `inputs/`:
+- game manual PDF
+- field-dimension drawing PDF
+
+For example, 2026 uses:
+- `inputs/2026GameManual.pdf`
+- `inputs/2026-field-dimension-dwgs.pdf`
+
+The field-dimension drawing is treated as a required peer input because it feeds:
+- 2D sim field geometry
+- AprilTagFieldLayout JSON generation for WPILib deploy assets
+- cycle-time distance analysis for intake, transit, and scoring paths
+
+Artifact details:
+- `apriltag_field_layout.json` now uses the WPILib `AprilTagFieldLayout` JSON schema: top-level `tags[]` plus `field.length` and `field.width`.
+- `field_layout_reference.json` also records blue-side and red-side reference frames so downstream sim/codegen stages can mirror coordinates consistently.
+- Generated WPILib projects now include `src/main/java/frc/robot/FieldConstants.java` to centralize deploy-first AprilTag layout loading and alliance mirroring helpers.
 
 If `sim_arch_feedback.json` is missing, the pipeline bootstrap regenerates a template artifact automatically. If a non-template artifact is present, the pipeline validates allowed enums and numeric bounds before using it to rerank strategy candidates.
 
@@ -153,6 +177,7 @@ Bounded numeric fields:
 
 A release requires:
 - Rule extraction recall ≥ 98% for required sections (objectives, timing, scoring, penalties, field)
+- Both required source PDFs are present and recorded in the manifest (`source_manual`, `source_field_drawing`)
 - Every downstream recommendation includes at least one source citation (`section_id`, `page`)
 - Reproducible simulation outputs with pinned random seeds
 - Zero critical rule compliance failures in `validation_report.json`
