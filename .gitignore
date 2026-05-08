@@ -76,6 +76,7 @@ simgui.json
 /artifacts/
 /context/game_spec.json
 /inputs/*.pdf
+/2026GameManual.pdf
 *.wpilog
 *.halsimlog
 tmp_refs/
