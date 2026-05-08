@@ -50,6 +50,16 @@
 	- `alliance_dependency_score`: how much success depends on partners
 	- `defense_sensitivity`: performance drop under moderate defense
 	- `implementation_complexity`: mechanism + software + driver training effort
+- **Cycle-Time Modeling Requirements (mandatory in human-readable report):**
+	- Model the four cycle components explicitly: drive-to-acquire, acquire, drive-to-score, score.
+	- Use drive-time envelope `1-9 s` for both outbound and return legs.
+	- For single-piece robots, use intake and scoring envelopes `0.5-2.0 s` each.
+	- For limited multi-piece robots, use intake-rate envelope `1-10 pieces/s`; evaluate multiple planned loads up to assumed capacity.
+	- For unlimited-storage assumption, use intake-rate envelope `1-15 pieces/s`; evaluate multiple planned loads and note practicality limits.
+	- For multi-piece scoring, use scoring-rate envelope `1-15 pieces/s`.
+	- Estimate geometric upper-bound storage capacity from game-piece dimensions plus robot perimeter/height envelope, then apply a `10-20%` volume cut for chassis/mechanism occupancy.
+	- Include current swerve metagame assumptions: free-speed envelope `~13-22 ft/s` and time-to-full-speed envelope `1-5 s`.
+	- Include an endgame decision table comparing endgame action EPS vs continuing primary-objective EPS, including break-even time.
 - **Output Contract (minimum keys):**
 	- `metadata`: `game_year`, `manual_version`, `schema_version`, `generated_at`
 	- `phase_model`: `auto`, `teleop`, `endgame`

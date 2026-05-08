@@ -685,6 +685,15 @@ def build_insight_analysis_md(
             parts.append(f"[{label}]")
         return " ".join(parts) if parts else ""
 
+    def as_float(value: Any, fallback: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return fallback
+
+    def fmt_range(low: float, high: float, digits: int = 2) -> str:
+        return f"{low:.{digits}f}-{high:.{digits}f}"
+
     # ── Document header ───────────────────────────────────────────────────────
     L.append(f"# {game_name} — Consolidated Manual Insight Analysis")
     L.append("")
@@ -851,6 +860,227 @@ def build_insight_analysis_md(
         L.append("| 4 | LEVEL 2 TOWER (above low rung) | TELEOP | 20 pt | Per robot |")
         L.append("| 5 | LEVEL 3 TOWER (above mid rung) | TELEOP | 30 pt | Per robot |")
     sep()
+
+    h(3, "Cycle Time Range Assumptions and Throughput Model")
+    p(
+        "The cycle model below is tuned for current swerve-heavy FRC metagame assumptions and is used to "
+        "estimate primary-objective points-per-second before deciding whether to switch into endgame actions."
+    )
+
+    # Requested cycle-time envelope assumptions.
+    drive_time_min_s = 1.0
+    drive_time_max_s = 9.0
+    single_piece_intake_min_s = 0.5
+    single_piece_intake_max_s = 2.0
+    single_piece_score_min_s = 0.5
+    single_piece_score_max_s = 2.0
+    limited_intake_rate_low = 1.0
+    limited_intake_rate_high = 10.0
+    unlimited_intake_rate_low = 1.0
+    unlimited_intake_rate_high = 15.0
+    multi_piece_score_rate_low = 1.0
+    multi_piece_score_rate_high = 15.0
+
+    swerve_speed_low_fps = 13.0
+    swerve_speed_high_fps = 22.0
+    swerve_speed_low_mps = swerve_speed_low_fps * 0.3048
+    swerve_speed_high_mps = swerve_speed_high_fps * 0.3048
+    full_speed_accel_low_s = 1.0
+    full_speed_accel_high_s = 5.0
+
+    L.append("| Component | Assumption Range |")
+    L.append("|-----------|------------------|")
+    L.append(f"| Drive to game piece | {fmt_range(drive_time_min_s, drive_time_max_s, 1)} s |")
+    L.append(f"| Acquire single piece | {fmt_range(single_piece_intake_min_s, single_piece_intake_max_s, 1)} s |")
+    L.append(f"| Drive to scoring location | {fmt_range(drive_time_min_s, drive_time_max_s, 1)} s |")
+    L.append(f"| Score single piece | {fmt_range(single_piece_score_min_s, single_piece_score_max_s, 1)} s |")
+    L.append(f"| Intake rate (limited multi-piece robot) | {fmt_range(limited_intake_rate_low, limited_intake_rate_high, 1)} pieces/s |")
+    L.append(f"| Intake rate (unlimited-storage assumption) | {fmt_range(unlimited_intake_rate_low, unlimited_intake_rate_high, 1)} pieces/s |")
+    L.append(f"| Multi-piece scoring rate | {fmt_range(multi_piece_score_rate_low, multi_piece_score_rate_high, 1)} pieces/s |")
+    L.append(f"| Swerve free speed envelope (Kraken X60 era) | {fmt_range(swerve_speed_low_fps, swerve_speed_high_fps, 0)} ft/s ({fmt_range(swerve_speed_low_mps, swerve_speed_high_mps, 2)} m/s) |")
+    L.append(f"| Time to full speed (ratio/current dependent) | {fmt_range(full_speed_accel_low_s, full_speed_accel_high_s, 0)} s |")
+    sep()
+
+    p(
+        "Reference drivetrain catalogs supplied with this project: x2i gear table image (embedded) and MK5n "
+        "gear table URL: https://cdn.shopify.com/s/files/1/0065/4308/1590/files/MK5n_Gear_Ratios_eddd1a62-7d51-432c-ba53-38352d5b2337.png?v=1747249162"
+    )
+
+    # Geometry-based upper bound for in-robot game-piece storage.
+    robot_perim_m = as_float(phys.get("robot_perimeter_m", 2.794), 2.794)
+    robot_h_m = as_float(phys.get("robot_height_m", 0.762), 0.762)
+    fuel_d_m = as_float(phys.get("fuel_diameter_m", fuel_diam), fuel_diam)
+    square_side_m = robot_perim_m / 4.0
+    robot_bounding_volume_m3 = square_side_m * square_side_m * robot_h_m
+    piece_radius_m = fuel_d_m / 2.0
+    piece_volume_m3 = (4.0 / 3.0) * 3.141592653589793 * (piece_radius_m ** 3)
+    packing_efficiency = 0.64
+    theoretical_piece_capacity = int(robot_bounding_volume_m3 * packing_efficiency / piece_volume_m3) if piece_volume_m3 > 0 else 0
+    usable_cap_low = max(1, int(theoretical_piece_capacity * 0.8))
+    usable_cap_high = max(usable_cap_low, int(theoretical_piece_capacity * 0.9))
+
+    h(4, "Storage Capacity Envelope from Robot Geometry")
+    L.append("| Metric | Value |")
+    L.append("|--------|-------|")
+    L.append(f"| Frame-perimeter-derived square side | {square_side_m:.3f} m |")
+    L.append(f"| Bounding volume (side^2 x height) | {robot_bounding_volume_m3:.3f} m^3 |")
+    L.append(f"| Single FUEL volume (sphere upper bound) | {piece_volume_m3:.5f} m^3 |")
+    L.append(f"| Theoretical packed piece count (64% packing) | {theoretical_piece_capacity} pieces |")
+    L.append(f"| Usable after 10-20% mechanism/chassis cut | {usable_cap_low}-{usable_cap_high} pieces |")
+    sep()
+    p(
+        "This is a strict geometric upper bound. Real robots will be lower due to indexing architecture, legal "
+        "extension constraints, and practical control limits."
+    )
+
+    def cycle_window(load_count: int, intake_rate_fast: float, intake_rate_slow: float, score_rate_fast: float, score_rate_slow: float) -> tuple[float, float, float, float]:
+        drive_fast = 2.0 * drive_time_min_s
+        drive_slow = 2.0 * drive_time_max_s
+        intake_fast = load_count / intake_rate_fast
+        intake_slow = load_count / intake_rate_slow
+        score_fast = load_count / score_rate_fast
+        score_slow = load_count / score_rate_slow
+        total_fast = drive_fast + intake_fast + score_fast
+        total_slow = drive_slow + intake_slow + score_slow
+        pps_low = load_count / total_slow
+        pps_high = load_count / total_fast
+        return total_fast, total_slow, pps_low, pps_high
+
+    # Requested variability for 1-piece and multi-piece robots.
+    single_total_fast = (2.0 * drive_time_min_s) + single_piece_intake_min_s + single_piece_score_min_s
+    single_total_slow = (2.0 * drive_time_max_s) + single_piece_intake_max_s + single_piece_score_max_s
+    single_pps_low = 1.0 / single_total_slow
+    single_pps_high = 1.0 / single_total_fast
+
+    limited_capacity_assumption = min(12, max(5, usable_cap_low))
+    limited_load_samples = sorted(set([1, max(2, limited_capacity_assumption // 2), limited_capacity_assumption]))
+
+    unlimited_load_samples = [10, 20, 40]
+    if usable_cap_low >= 60:
+        unlimited_load_samples.append(60)
+    unlimited_load_samples = sorted(set(unlimited_load_samples))
+
+    h(4, "Cycle Time Envelope by Robot Handling Mode")
+    L.append("| Mode | Planned Load | Total Cycle Time (s) | Primary Objective EPS (pts/s) |")
+    L.append("|------|--------------|----------------------|-------------------------------|")
+    L.append(
+        "| Single-piece robot | 1 piece | "
+        f"{fmt_range(single_total_fast, single_total_slow, 2)} | {fmt_range(single_pps_low, single_pps_high, 3)} |"
+    )
+
+    practical_pps_lows: list[float] = [single_pps_low]
+    practical_pps_highs: list[float] = [single_pps_high]
+
+    for load in limited_load_samples:
+        total_fast, total_slow, pps_low, pps_high = cycle_window(
+            load_count=load,
+            intake_rate_fast=limited_intake_rate_high,
+            intake_rate_slow=limited_intake_rate_low,
+            score_rate_fast=multi_piece_score_rate_high,
+            score_rate_slow=multi_piece_score_rate_low,
+        )
+        practical_pps_lows.append(pps_low)
+        practical_pps_highs.append(pps_high)
+        L.append(
+            "| Limited multi-piece robot "
+            f"(max {limited_capacity_assumption}) | {load} pieces | "
+            f"{fmt_range(total_fast, total_slow, 2)} | {fmt_range(pps_low, pps_high, 3)} |"
+        )
+
+    for load in unlimited_load_samples:
+        total_fast, total_slow, pps_low, pps_high = cycle_window(
+            load_count=load,
+            intake_rate_fast=unlimited_intake_rate_high,
+            intake_rate_slow=unlimited_intake_rate_low,
+            score_rate_fast=multi_piece_score_rate_high,
+            score_rate_slow=multi_piece_score_rate_low,
+        )
+        L.append(
+            "| Unlimited-storage assumption (upper bound) | "
+            f"{load} pieces | {fmt_range(total_fast, total_slow, 2)} | {fmt_range(pps_low, pps_high, 3)} |"
+        )
+    sep()
+    p(
+        "Interpretation: higher planned loads improve best-case EPS only when intake and scoring rates are high enough. "
+        "At slow intake rates, fully loading before scoring is often suboptimal versus shorter, faster trips."
+    )
+
+    # Endgame trade study: equivalent points-per-second versus continuing primary objective.
+    h(4, "Endgame Action vs Continue Primary Objective (EPS Trade Study)")
+    p(
+        "Decision rule: choose endgame action when expected endgame EPS exceeds expected primary-objective EPS over the "
+        "same remaining endgame window and climb success probability is acceptable."
+    )
+    L.append("$$")
+    L.append("\\text{Primary EPS} = \\frac{\\text{Primary Points per Cycle}}{\\text{Cycle Time}}")
+    L.append("$$")
+    L.append("$$")
+    L.append("\\text{Endgame EPS} = \\frac{\\text{Endgame Points}}{\\text{Commit Time}}")
+    L.append("$$")
+    L.append("$$")
+    L.append("\\text{Break-even Commit Time} = \\frac{\\text{Endgame Points}}{\\text{Primary EPS}}")
+    L.append("$$")
+    sep()
+
+    primary_practical_eps_low = min(practical_pps_lows)
+    primary_practical_eps_high = max(practical_pps_highs)
+
+    competitive_eps_lows = [v for v in practical_pps_lows if v >= 0.15]
+    competitive_eps_highs = [v for v in practical_pps_highs if v <= 2.2]
+    decision_eps_low = max(0.2, min(competitive_eps_lows) if competitive_eps_lows else primary_practical_eps_low)
+    decision_eps_high = min(1.8, max(competitive_eps_highs) if competitive_eps_highs else primary_practical_eps_high)
+    if decision_eps_high <= decision_eps_low:
+        decision_eps_high = max(decision_eps_low + 0.1, primary_practical_eps_high)
+
+    p(
+        "Primary-objective practical EPS envelope from the cycle model (single + limited-capacity modes): "
+        f"**{fmt_range(primary_practical_eps_low, primary_practical_eps_high, 3)} pts/s**."
+    )
+    p(
+        "Competitive decision band used for endgame break-even calls (filters out extreme low/high outliers): "
+        f"**{fmt_range(decision_eps_low, decision_eps_high, 3)} pts/s**."
+    )
+
+    endgame_actions: list[tuple[str, float]] = []
+    for action in scoring:
+        action_name = str(action.get("action", action.get("name", "")))
+        action_upper = action_name.upper()
+        phase_upper = str(action.get("phase", "")).upper()
+        if "TOWER" in action_upper and "LEVEL" in action_upper:
+            if "AUTO" in phase_upper:
+                continue
+            pts_value = as_float(action.get("points", 0), 0.0)
+            if pts_value > 0:
+                endgame_actions.append((action_name, pts_value))
+
+    if not endgame_actions:
+        endgame_actions = [
+            ("LEVEL 1 TOWER", 10.0),
+            ("LEVEL 2 TOWER", 20.0),
+            ("LEVEL 3 TOWER", 30.0),
+        ]
+
+    # Typical climb commit window assumption for strategic comparison.
+    commit_time_fast_s = 5.0
+    commit_time_slow_s = 20.0
+
+    L.append("| Endgame Action | Points | Commit Time (s) | Endgame EPS (pts/s) | Break-even Time vs Primary EPS (s) |")
+    L.append("|----------------|--------|-----------------|---------------------|------------------------------------|")
+    for action_name, points in endgame_actions:
+        endgame_eps_low = points / commit_time_slow_s
+        endgame_eps_high = points / commit_time_fast_s
+        break_even_fast = points / decision_eps_high
+        break_even_slow = points / decision_eps_low
+        L.append(
+            f"| {action_name} | {points:.0f} | {fmt_range(commit_time_fast_s, commit_time_slow_s, 0)} | "
+            f"{fmt_range(endgame_eps_low, endgame_eps_high, 2)} | {fmt_range(break_even_fast, break_even_slow, 1)} |"
+        )
+    sep()
+    p(
+        "Practical call: if remaining endgame time is less than break-even for your expected primary EPS and your climb "
+        "success probability is high, transition to TOWER. If remaining time is greater and your cycle is efficient, continue "
+        "primary scoring before committing."
+    )
 
     h(3, "Scoring Insight Rubric (per skill definition)")
     L.append("| Action | Value/Second | Risk-Weighted | Alliance Dependency | Defense Sensitivity | Complexity |")
