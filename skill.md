@@ -87,8 +87,9 @@
 - **Input:** `mechanics.json`, `strategy.md`
 - **Output:** WPILib project (Java/C++), subsystems, commands, PID configs
 - **Tools:** `jinja2`, wpilib-template, motor/sensor DB
-- **Validation:** Compiles with WPILib 2024+, uses command-based paradigm, includes all required subsystems.
-- **Prompt Template:** `Generate a command-based WPILib project. Include subsystems for {intake, drive, scoring, lifting}. Add PID configs, auto routines, and teleop commands. Follow 2024+ WPILib standards.`
+- **WPILib Version:** WPILib 2026 (current year). Always target the latest 2026 release. Verify the exact version at https://github.com/wpilibsuite/allwpilib/releases before generating code; do not hardcode a patch version.
+- **Validation:** Compiles with WPILib 2026, uses command-based paradigm, includes all required subsystems. Reject output that imports deprecated or pre-2026 APIs.
+- **Prompt Template:** `Generate a command-based WPILib project targeting WPILib 2026. Include subsystems for {intake, drive, scoring, lifting}. Add PID configs, auto routines, and teleop commands. Follow WPILib 2026 standards and API conventions.`
 
 ## Skill: Power Usage Modeling
 - **Input:** Robot design, motor specs, duty cycles
