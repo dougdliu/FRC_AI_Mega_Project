@@ -253,6 +253,13 @@ External skills pulled from community repositories and vendored into `skills/`. 
 - **Pipeline stage:** `mc_simulator` analysis reports / `mechanic_analyst` exploration
 - **Activation:** Load when creating notebooks for Monte Carlo sweep results, scoring analysis, or game mechanics exploration. Use `experiment` kind for data analysis, `tutorial` kind for strategy walkthroughs. Scaffold with `new_notebook.py`.
 
+#### `karpathy/claude` — LLM Agent Behavioral Guidelines
+- **Local path:** `skills/karpathy/CLAUDE.md`
+- **Source:** https://github.com/forrestchang/andrej-karpathy-skills/blob/main/CLAUDE.md
+- **Pipeline stage:** All agents (foundational)
+- **Activation:** Load for all agents to enforce four core behavioral principles: (1) Think before coding — surface assumptions and tradeoffs; (2) Simplicity First — minimum code, no speculative features; (3) Surgical Changes — touch only what is required; (4) Goal-Driven Execution — define verifiable success criteria before starting multi-step tasks.
+- **Key principles:** No premature abstraction, no silent interpretation of ambiguous requirements, no "improvement" of adjacent code, every change traceable to the user's request.
+
 ---
 
 ### Tier 2 — Sub-Task Skills (load when stage is active)
@@ -330,16 +337,16 @@ External skills pulled from community repositories and vendored into `skills/`. 
 
 | Agent | Skills to activate |
 |---|---|
-| `pdf_extractor` | `anthropic/pdf` |
-| `mechanic_analyst` | `codex/jupyter-notebook` |
-| `strategy_architect` | `anthropic/doc-coauthoring` |
-| `robot_codegen` | `anthropic/claude-api` |
-| `power_engineer` | `anthropic/xlsx` |
-| `scout_dev` | `anthropic/frontend-design`, `anthropic/webapp-testing`, `codex/playwright` |
-| `sim_engineer` | `codex/screenshot` |
-| `mc_simulator` | `codex/jupyter-notebook` |
-| `advscope_integrator` | *(no external skill)* |
-| `qa_validator` | `codex/security-best-practices`, `codex/security-threat-model` |
-| Orchestrator | `anthropic/claude-api`, `anthropic/mcp-builder` |
-| Pipeline CLI | `codex/cli-creator` |
+| `pdf_extractor` | `anthropic/pdf`, `karpathy/claude` |
+| `mechanic_analyst` | `codex/jupyter-notebook`, `karpathy/claude` |
+| `strategy_architect` | `anthropic/doc-coauthoring`, `karpathy/claude` |
+| `robot_codegen` | `anthropic/claude-api`, `karpathy/claude` |
+| `power_engineer` | `anthropic/xlsx`, `karpathy/claude` |
+| `scout_dev` | `anthropic/frontend-design`, `anthropic/webapp-testing`, `codex/playwright`, `karpathy/claude` |
+| `sim_engineer` | `codex/screenshot`, `karpathy/claude` |
+| `mc_simulator` | `codex/jupyter-notebook`, `karpathy/claude` |
+| `advscope_integrator` | `karpathy/claude` |
+| `qa_validator` | `codex/security-best-practices`, `codex/security-threat-model`, `karpathy/claude` |
+| Orchestrator | `anthropic/claude-api`, `anthropic/mcp-builder`, `karpathy/claude` |
+| Pipeline CLI | `codex/cli-creator`, `karpathy/claude` |
 | CI / Release | `codex/gh-fix-ci`, `codex/yeet` |
