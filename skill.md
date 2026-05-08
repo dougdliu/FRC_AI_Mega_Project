@@ -18,8 +18,8 @@
 - Validation logs are written to `/artifacts/{game_year}/validation/`.
 
 ## Skill: Consolidated FRC Manual Insight Analysis
-- **Intent:** Use a single worksheet-driven framework (derived from Team 2791/6328 and FIRST kickoff worksheets) to convert manual text into actionable game insights.
-- **Input:** Game manual PDF, Team Updates, Q&A clarifications, optional historical game analogs.
+- **Intent:** Use a single worksheet-driven framework (derived from Team 2791/6328 and FIRST kickoff worksheets) to convert manual text into actionable game insights. Operates as the strategic reasoning layer above PDF Rule Extraction — prefer consuming `rules.json` when available to avoid redundant PDF parsing; fall back to raw PDF only when `rules.json` has not yet been produced.
+- **Input:** `rules.json` (preferred, from PDF Rule Extraction) or game manual PDF (fallback). Team Updates and Q&A clarifications as supplemental inputs. Optional historical game analogs.
 - **Output:**
 	- `manual_insight_packet.json`
 	- `strategy_hypotheses.md`
@@ -70,18 +70,24 @@
 	- FIRST Kickoff Breakdown Worksheet (PDF)
 
 ## Skill: PDF Rule Extraction
-- **Input:** Game manual PDF
-- **Output:** `rules.json` (sections, clauses, constraints, scoring, field dimensions)
-- **Tools:** `pymupdf`, regex clause parser, table extractor
-- **Validation:** All game objectives, time limits, penalties, and field measurements present. Cross-check against official FRC rulebook PDF if available.
-- **Prompt Template:** `Extract all game rules, constraints, scoring, and field dimensions from the PDF. Output structured JSON with sections: {objectives, time, scoring, penalties, field, alliances, equipment_limits}.`
+- **Role:** Structured extraction foundation. Produces the machine-readable `rules.json` that both **Consolidated FRC Manual Insight Analysis** (strategic reasoning) and **Game Mechanics Modeling** (computational modeling) consume. Does not perform strategic analysis — extraction only.
+- **Input:** Game manual PDF (via `anthropic/pdf` skill). Also accepts Team Updates and Q&A addenda as supplemental PDFs to merge into output.
+- **Output:** `rules.json` (sections, clauses, constraints, scoring, field dimensions, time limits, equipment limits)
+- **Output Contract (minimum keys):** `sections[]` (id, title, text, page), `scoring[]` (action, points, phase, constraints), `penalties[]` (rule_id, type, points), `field` (dimensions, zones, elements), `timing` (auto_s, teleop_s, endgame_s), `equipment_limits` (weight, frame, extension, height), `citations[]` (page, section_id, raw_text)
+- **Tools:** `anthropic/pdf` (primary extraction), `pymupdf`, regex clause parser, table extractor
+- **Downstream consumers:** `Consolidated FRC Manual Insight Analysis` (preferred input over raw PDF), `Game Mechanics Modeling`
+- **Validation:** All game objectives, time limits, penalties, and field measurements present. Every extracted clause must include page and section citation. Cross-check section count against PDF table of contents.
+- **Prompt Template:** `Extract all game rules, constraints, scoring, penalties, field dimensions, and time limits from the PDF. Output rules.json with sections: {sections, scoring, penalties, field, timing, equipment_limits, citations}. Do not interpret or analyze — extract only.`
 
 ## Skill: Game Mechanics Modeling
-- **Input:** `rules.json`
-- **Output:** `mechanics.json` (state machine, resource flow, win conditions, physics constraints)
-- **Tools:** `networkx`, constraint solver
-- **Validation:** No circular dependencies, all scoring paths mapped, time/resource limits enforced.
-- **Prompt Template:** `Model the game as a state machine. Map scoring paths, resource constraints, alliance interactions, and win conditions. Output mechanics.json with states, transitions, and constraints.`
+- **Role:** Formal computational modeling layer. Converts `rules.json` into a machine-executable model (state machine + constraint graph) that the Monte Carlo simulator and 2D physics sim consume directly. Distinct from **Consolidated FRC Manual Insight Analysis**, which produces human-readable strategic outputs — this skill produces simulation-ready data structures.
+- **Input:** `rules.json` (from PDF Rule Extraction). Also accepts `manual_insight_packet.json` as a supplemental cross-reference to flag modeling gaps.
+- **Output:** `mechanics.json` (state machine, resource flow graph, win conditions, physics constraints)
+- **Output Contract (minimum keys):** `states[]` (id, phase, entry_conditions, exit_conditions), `transitions[]` (from_state, to_state, action, duration_s, point_delta), `resource_constraints[]` (resource, limit, scope), `win_conditions[]` (condition, tiebreaker_order), `physics` (max_speed_mps, max_accel_mps2, robot_footprint_m)
+- **Tools:** `networkx` (constraint graph), constraint solver, `sympy` (physics bounds)
+- **Downstream consumers:** `Monte Carlo Strategy Simulation`, `2D Physics Simulation`, `WPILib Robot Code Generation`
+- **Validation:** No circular state transitions. All scoring actions from `rules.json` must appear as transitions. All time limits enforced as state duration bounds. Resource constraints must be satisfiable (constraint solver passes). Cross-check `win_conditions` against `rp_model` in `manual_insight_packet.json` if available.
+- **Prompt Template:** `Convert rules.json into a formal game mechanics model. Build a state machine with states for each game phase and transitions for each scoring action. Model resource constraints and win conditions as computable constraints. Output mechanics.json — do not include strategy recommendations; this is a simulation input, not a strategy document.`
 
 ## Skill: WPILib Robot Code Generation
 - **Input:** `mechanics.json`, `strategy.md`
@@ -145,15 +151,24 @@
 ### Core Pipeline Flow (internal skills)
 ```
 [anthropic/pdf]
-    └─> PDF Rule Extraction
-            └─> Game Mechanics Modeling  ──[codex/jupyter-notebook]
-                    └─> Monte Carlo Strategy Simulation  ──[codex/jupyter-notebook]
-                            └─> WPILib Robot Code Generation  ──[anthropic/claude-api]
+    └─> PDF Rule Extraction  ──────────────────────────────────┐
+            │                                                   │
+            ├─> Consolidated FRC Manual Insight Analysis        │  (strategic reasoning layer)
+            │       ──[anthropic/doc-coauthoring]               │
+            │       └─> strategy_hypotheses.md                  │
+            │               └─> WPILib Robot Code Generation ◄──┤
+            │                       ──[anthropic/claude-api]    │
+            │                                                   │
+            └─> Game Mechanics Modeling  ◄─────────────────────┘  (computational modeling layer)
+                    ──[codex/jupyter-notebook]
+                    └─> mechanics.json
+                            ├─> Monte Carlo Strategy Simulation  ──[codex/jupyter-notebook]
+                            │       └─> win-rate heatmaps + strategy recommendations
+                            │               └─> WPILib Robot Code Generation
+                            │                       └─> AdvantageScope Log Integration
+                            │                               └─> Iterative Log-Assisted Dev
+                            └─> 2D Physics Simulation  ──[codex/screenshot]
                                     └─> AdvantageScope Log Integration
-                                            └─> Iterative Log-Assisted Dev
-                            │
-                            └─> Strategy Synthesis  ──[anthropic/doc-coauthoring]
-                                    └─> WPILib Robot Code Generation
 
 [anthropic/xlsx]
     └─> Power Usage Modeling  (parallel with robot_codegen)
@@ -182,6 +197,9 @@
 
 ### Dependency Rules
 - `anthropic/pdf` must be loaded before any PDF is read or written.
+- **PDF Rule Extraction runs first** and its `rules.json` is the shared input to both Consolidated FRC Manual Insight Analysis and Game Mechanics Modeling. Neither downstream skill should re-parse the raw PDF if `rules.json` exists.
+- **Consolidated FRC Manual Insight Analysis** and **Game Mechanics Modeling** are parallel consumers of `rules.json` — they run concurrently after extraction completes. Consolidated produces strategic outputs (human-readable); Game Mechanics produces simulation inputs (machine-readable).
+- `manual_insight_packet.json` (from Consolidated) may be passed to Game Mechanics Modeling as a cross-reference to catch modeling gaps, but is not required.
 - `anthropic/mcp-builder` (+ relevant reference file) must be loaded before implementing any MCP server.
 - `anthropic/claude-api` must be loaded before any agent writes code that calls Claude.
 - `codex/security-best-practices` and `codex/security-threat-model` must both be loaded at the `qa_validator` gate.
