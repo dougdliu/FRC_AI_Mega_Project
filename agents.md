@@ -1,60 +1,45 @@
-# Agent Design
+# FRC Game Analysis & Dev Agents
 
-## Agent Philosophy
-Use specialized agents with narrow responsibilities and explicit handoff artifacts. Avoid one monolithic agent for all tasks.
+## Agent Registry
+| Agent | Role | Core Capabilities | Tools/Dependencies | I/O Contract |
+|-------|------|-------------------|--------------------|--------------|
+| `pdf_extractor` | Manual Parser | PDF→text, image/table extraction, OCR fallback, rule clause mapping | `pymupdf`, `tabula-py`, `layoutparser` | Input: PDF → Output: Structured JSON (rules, constraints, scoring, field layout) |
+| `mechanic_analyst` | Game Logic Modeler | Constraint graph, state machine, resource flow, win condition modeling | `networkx`, `sympy`, rule JSON | Input: Rule JSON → Output: Game mechanics spec (physics, scoring, penalties, time limits) |
+| `strategy_architect` | Tactic Designer | Alliance composition, resource allocation, risk/reward mapping, Monte Carlo prep | `numpy`, `scipy`, strategy templates | Input: Mechanics spec → Output: Strategy doc (markdown/PDF) + simulation parameters |
+| `robot_codegen` | WPILib Generator | Command-based architecture, subsystem wiring, PID config, motor/sensor mapping | `wpilib-template`, `jinja2`, C++/Java | Input: Strategy spec → Output: WPILib project skeleton + core subsystems |
+| `power_engineer` | Electrical Modeler | Current draw estimation, battery sag, duty cycle, thermal limits | `pandas`, `matplotlib`, motor curves | Input: Robot design → Output: Power usage app (web) + CSV/JSON budget |
+| `scout_dev` | Scouting App Builder | Data schema, UI logic, export/import, API sync | `streamlit`/`flutter`, `sqlite`, `fastapi` | Input: Scoring/penalty rules → Output: Scouting app + DB schema |
+| `sim_engineer` | 2D/Physics Simulator | Canvas rendering, collision detection, kinematics, parameter sliders | `pygame`/`p5.js`, `box2d` | Input: Robot params → Output: Interactive 2D sim + parameter JSON |
+| `mc_simulator` | Monte Carlo Strategist | 3v3 alliance simulation, win-rate estimation, parameter sweeps | `ray`, `numpy`, `seaborn` | Input: Sim params + rules → Output: Win-rate heatmap + strategy recommendations |
+| `advscope_integrator` | Logging Formatter | WPILib log→AdvantageScope CSV, trajectory export, replay sync | `wpilib-log`, `csvkit` | Input: Robot code → Output: `.csv` logs + AdvantageScope config |
+| `qa_validator` | Rule & Physics Auditor | FRC rule compliance, constraint checking, simulation vs reality bounds | `pytest`, rule DB, physics bounds | Input: All outputs → Output: Validation report + fix directives |
 
-## Proposed Agent Set
-1. Orchestrator Agent
-- Runs pipeline stages in order.
-- Tracks run metadata and retries.
+## Orchestration Protocol
+- **Sequence:** `pdf_extractor` → `mechanic_analyst` → `strategy_architect` → parallel `robot_codegen`, `power_engineer`, `scout_dev`, `sim_engineer`, `mc_simulator` → `advscope_integrator` → `qa_validator`
+- **Fallback:** Any agent failing validation triggers `qa_validator` → rework directive → retry (max 3)
+- **State:** All outputs versioned in `/artifacts/{game_year}/`. Shared context via `/context/game_spec.json`
 
-2. PDF Parsing Agent
-- Calls parsing tools and emits structured extraction output.
-- Marks uncertain blocks for review.
+## Agent Interface Standards
+- All agent outputs must include:
+	- `success` (bool)
+	- `artifact_paths` (array)
+	- `warnings` (array)
+	- `citations` (array of `{section_id, page}` where applicable)
+- All agent failures must include:
+	- `error_code`
+	- `error_message`
+	- `retryable` (bool)
 
-3. Rule Modeling Agent
-- Maps extracted text to canonical schema objects.
-- Resolves references between definitions, rules, and scoring.
+## Quality Ownership
+- `pdf_extractor`: extraction completeness and citation fidelity.
+- `mechanic_analyst`: constraint correctness and state-machine validity.
+- `strategy_architect`: strategy assumptions and scenario coverage.
+- `robot_codegen`: compile validity and command-based architecture conformance.
+- `power_engineer`: electrical envelope conformance.
+- `sim_engineer` and `mc_simulator`: reproducible simulation outputs.
+- `qa_validator`: final release gate authority.
 
-4. Retrieval Agent
-- Builds and validates vector and keyword indexes.
-- Tunes chunking and retrieval settings.
-
-5. Tool Synthesis Agent
-- Generates utilities from canonical model.
-- Ensures each utility cites source sections.
-
-6. Validation Agent
-- Runs quality checks and regression test suites.
-- Fails pipeline on critical confidence drops.
-
-7. Release Agent
-- Produces changelog and publishes approved artifacts.
-
-## Handoff Contracts
-- Parsing Agent -> Rule Modeling Agent
-	- extraction_bundle.json
-	- extraction_warnings.json
-
-- Rule Modeling Agent -> Retrieval Agent
-	- canonical_entities.json
-	- canonical_relationships.json
-
-- Retrieval Agent -> Tool Synthesis Agent
-	- vector_index_manifest.json
-	- keyword_index_manifest.json
-
-- Tool Synthesis Agent -> Validation Agent
-	- tool_manifest.json
-	- generated_reports.json
-
-## Agent Guardrails
-- No agent may drop source citations.
-- Ambiguous text must be marked with confidence and reason.
-- Schema-breaking output must be rejected immediately.
-
-## Failure Policy
-- Retry transient failures up to 2 times.
-- Escalate deterministic parsing failures to manual review queue.
-- Block release when validation severity is high.
-
+## Concurrency Rules
+- Parallel agents must not write to shared files directly.
+- Shared updates happen only through orchestrator-managed merge into `/context/game_spec.json`.
+- Artifact naming must be deterministic to support caching and diffing.

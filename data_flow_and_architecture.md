@@ -1,95 +1,40 @@
-# Data Flow and Architecture
+# System Architecture
+- **Input:** `/inputs/{game_year}.pdf`
+- **Context:** `/context/game_spec.json` (shared state)
+- **Artifacts:** `/artifacts/{game_year}/`
+  - `rules.json`, `mechanics.json`, `strategy.md`
+  - `wpilib_project/`, `power_app/`, `scouting_app/`
+  - `sim_2d/`, `mc_results/`, `logs/`
+- **Orchestrator:** LangGraph/CrewAI state machine
+- **Storage:** SQLite for scouting, CSV for logs, JSON for specs
+- **Compute:** Local GPU for sim/MC, CPU for parsing/generation
+- **APIs:** FastAPI for app serving, Streamlit for dashboards
 
-## Architecture Style
-Hybrid architecture:
-- Batch ETL for PDF parsing and normalization.
-- Query-time retrieval for analysis and question answering.
-- Tool generation layer that composes reusable game-analysis utilities.
+## Data Contracts
+- `rules.json`
+  - Required keys: `sections`, `scoring`, `penalties`, `field`, `timing`.
+  - Required citation fields per clause: `section_id`, `page`, `clause_text`.
+- `mechanics.json`
+  - Required keys: `states`, `transitions`, `resource_constraints`, `win_conditions`.
+  - Each transition must map to one or more rule citations.
+- `game_spec.json`
+  - Merges normalized rules, mechanics, and strategy constraints.
+  - Contains `schema_version`, `generator_versions`, and `created_at`.
 
-## Core Components
-1. Source Manager
-- Stores manual PDF(s), release version, and checksum.
+## Execution Topology
+- Sequential stages: ingest, model, plan.
+- Parallel stages: robot codegen, power modeling, scouting app, physics sim, Monte Carlo.
+- Join stage: integration plus validation.
 
-2. Document Parser
-- Extracts text blocks, headers, page numbers, tables, and figures metadata.
-- Emits page-level and section-level structured output.
+## Provenance and Reproducibility
+- Every generated artifact must include:
+  - `source_manual_hash`
+  - `generator_name`
+  - `generator_version`
+  - `timestamp_utc`
+- Simulation and Monte Carlo outputs must include random seed values.
 
-3. Canonicalizer
-- Converts raw extraction into typed entities:
-	- Definitions
-	- Rules and constraints
-	- Scoring actions
-	- Match phases and timing
-	- Penalties and exceptions
-
-4. Knowledge Store
-- Relational or document store for typed entities.
-- Vector index for semantic retrieval.
-- Keyword index for deterministic exact-match retrieval.
-
-5. Tool Generator
-- Builds task-specific utilities from canonical entities.
-- Examples: scoring calculator, penalty risk checker, role optimization helper.
-
-6. Validation Engine
-- Executes rule consistency checks.
-- Runs extraction quality tests and schema compliance tests.
-
-7. Interface Layer
-- CLI and optional web dashboard for coaches and strategists.
-
-## Data Flow
-1. Input PDF enters Source Manager.
-2. Document Parser produces extraction JSON.
-3. Canonicalizer maps extraction to schema entities.
-4. Knowledge Store updates indexes and graph relations.
-5. Tool Generator emits analysis modules and reports.
-6. Validation Engine runs before publish.
-7. Interface Layer exposes approved outputs.
-
-## Canonical Entity Schema (Draft)
-- Rule
-	- id
-	- title
-	- body
-	- applies_to_phase
-	- source_page
-	- source_section
-- ScoringAction
-	- id
-	- action
-	- points
-	- conditions
-	- max_count
-	- phase
-- Penalty
-	- id
-	- trigger
-	- severity
-	- points_or_card
-	- exceptions
-- FieldElement
-	- id
-	- name
-	- dimensions
-	- interactions
-- MatchPhase
-	- id
-	- name
-	- duration_seconds
-	- legal_actions
-
-## Quality and Traceability Requirements
-- Every entity must include source page and section anchors.
-- Conflicting extractions must be flagged, never silently merged.
-- Confidence scoring must be stored for each extracted field.
-
-## Recommended Storage Layout
-- data/raw
-- data/extracted
-- data/canonical
-- data/index/vector
-- data/index/keyword
-- artifacts/tools
-- artifacts/reports
-
+## Failure Boundaries
+- Stage failures are isolated to stage-local output directories.
+- Upstream artifacts remain immutable once marked validated.
+- Retry count and failure reason are appended to `/artifacts/{game_year}/run_history.json`.
