@@ -88,8 +88,15 @@
 - **Output:** WPILib project (Java/C++), subsystems, commands, PID configs
 - **Tools:** `jinja2`, wpilib-template, motor/sensor DB
 - **WPILib Version:** WPILib 2026 (current year). Always target the latest 2026 release. Verify the exact version at https://github.com/wpilibsuite/allwpilib/releases before generating code; do not hardcode a patch version.
-- **Validation:** Compiles with WPILib 2026, uses command-based paradigm, includes all required subsystems. Reject output that imports deprecated or pre-2026 APIs.
-- **Prompt Template:** `Generate a command-based WPILib project targeting WPILib 2026. Include subsystems for {intake, drive, scoring, lifting}. Add PID configs, auto routines, and teleop commands. Follow WPILib 2026 standards and API conventions.`
+- **Vendor Dependencies (always include, always use latest stable release):**
+  - **AdvantageKit** — Verify latest at https://github.com/Mechanical-Advantage/AdvantageKit/releases. Add the vendordep JSON from the AdvantageKit release assets. Use `@AutoLog` annotations on all subsystems.
+  - **CTRE Phoenix v6** — Verify latest at https://maven.ctr-electronics.com/release/com/ctre/phoenix6/tools/. Use the v6 API (`TalonFX`, `CANcoder`, `Pigeon2`); never generate v5 (`com.ctre.phoenix`) imports.
+  - **PathplannerLib** — Verify latest at https://github.com/mjansen4857/pathplanner/releases. Use `AutoBuilder.configure()` for auto routine wiring and `PathPlannerPath.fromPathFile()` for named paths.
+  - **photonlib** — Verify latest at https://github.com/PhotonVision/photonvision/releases. Use `PhotonCamera` and `PhotonPoseEstimator` for vision-assisted odometry.
+  - **WPILib New Commands** — Included in WPILib 2026 core (`edu.wpi.first.wpilibj2.command`). Do not add as a separate vendordep; confirm the `commands` artifact is present in `build.gradle` / `build.json`.
+- **Vendordep fetch rule:** Before writing any vendordep JSON inline, fetch the `.json` URL from the library's official release page to get the exact artifact version string. Never construct version strings from memory.
+- **Validation:** Compiles with WPILib 2026, uses command-based paradigm, includes all required subsystems. Reject output that imports deprecated or pre-2026 APIs. All five vendor libraries must be present in the generated project's vendordeps or `build.gradle` dependencies block.
+- **Prompt Template:** `Generate a command-based WPILib project targeting WPILib 2026 with vendor dependencies: AdvantageKit (latest), CTRE Phoenix v6 (latest), PathplannerLib (latest), photonlib (latest), WPILib New Commands (2026 core). Include subsystems for {intake, drive, scoring, lifting}. Add PID configs, auto routines using PathplannerLib, and teleop commands. Follow WPILib 2026 standards and API conventions.`
 
 ## Skill: Power Usage Modeling
 - **Input:** Robot design, motor specs, duty cycles
