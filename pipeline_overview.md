@@ -1,43 +1,84 @@
 # FRC AI Development Pipeline
-1. **Ingest:** game manual PDF + field dimension drawing PDF → `pdf_extractor` → `rules.json` + `field_layout_reference.json` + `apriltag_field_layout.json`
-2. **Model:** `mechanic_analyst` → `mechanics.json`
-3. **Plan:** `strategy_architect` → `strategy.md` + sim parameters
-4. **Build (Parallel):**
-   - `robot_codegen` → WPILib project
-   - `power_engineer` → Power app + budget
-   - `scout_dev` → Scouting app
-   - `sim_engineer` → 2D sim game + params + architecture feedback (`sim_arch_feedback.json`)
-   - `mc_simulator` → Monte Carlo reports
-5. **Integrate:** `advscope_integrator` → Logs + config
-6. **Validate:** `qa_validator` → Compliance report
-7. **Iterate:** Logs → `skill: Iterative Log-Assisted Dev` → Code patches → Rebuild
-8. **Architecture Search Loop:** Human multiplayer playtests and RL 3v3 self-play in the 2D sim feed `sim_arch_feedback.json` back into manual insight analysis.
 
-## Success Criteria (Release Gate)
-- Rule extraction recall >= 98% for required sections (objectives, timing, scoring, penalties, field).
-- Every downstream recommendation includes at least one source citation (`section_id`, `page`).
-- Simulation and Monte Carlo tools produce reproducible outputs with pinned random seeds.
-- 2D sim architecture search outputs include reproducible KPI bundles and top-architecture rankings from both human and RL runs.
-- Validation report has zero critical rule compliance failures.
+## Stages
+
+1. **Ingest Manual and Field Sources**
+   - Inputs: game manual PDF, field drawing PDF, optional Team Updates and Q&A
+   - Agent: `pdf_extractor`
+   - Outputs: `rules.json`, `field_layout_reference.json`, `extraction_report.md`
+
+2. **Build Field Model**
+   - Inputs: `field_layout_reference.json`, field drawing PDF
+   - Agent: `field_modeler`
+   - Outputs: `field_model.json`, `apriltag_field_layout.json`
+
+3. **Model Game Mechanics**
+   - Inputs: `rules.json`, `field_model.json`
+   - Agent: `mechanic_analyst`
+   - Output: `mechanics.json`
+
+4. **Analyze Strategy**
+   - Inputs: `rules.json`, `field_model.json`, `mechanics.json`
+   - Agent: `strategy_architect`
+   - Outputs: `strategy_packet.json`, `strategy_brief.md`, `team_decision_packet.md`
+
+5. **Simulate Game and Strategy Assumptions**
+   - Inputs: `field_model.json`, `mechanics.json`, `strategy_packet.json`
+   - Agent: `sim_engineer`
+   - Outputs: `simulation_model.json`, `sim_params.json`, `sim_summary.json`, `simulation_report.md`
+   - Notes: simulations use abstract capability profiles, not a chosen team robot design
+
+6. **Validate Analysis Run**
+   - Inputs: all artifacts from stages 1-5
+   - Agent: `qa_validator`
+   - Output: `validation_report.json`
+
+## Key Design Decisions
+
+- Treat field-drawing extraction as a first-class stage, not a side effect of manual parsing.
+- Separate strategic analysis from robot implementation.
+- Use abstract capability profiles to test strategy sensitivity before the team chooses a robot design.
+- Keep simulations focused on game flow, scoring paths, field geometry, timing, and rough interaction constraints.
+- Keep robot code generation out of the core pipeline until humans provide team objectives and robot design inputs.
+
+## Success Criteria
+
+- Extraction covers the major manual sections: objectives, timing, scoring, penalties, field, and robot constraints.
+- Field model includes cited dimensions, zones, scoring locations, game-piece start locations, and alliance reference frames when available.
+- Every non-trivial strategy recommendation carries at least one source citation.
+- Simulation assumptions are explicit and reproducible under fixed seeds.
+- Simulation results identify robust strategy priorities and sensitivity to cycle-time assumptions.
+- Validation report clearly separates extraction defects, strategy defects, and simulation defects.
 
 ## Runtime Targets
-- Full pipeline runtime (single game manual) <= 20 minutes on development machine.
-- Incremental rerun after small rule edit <= 5 minutes.
-- MCP timeout and retry policy enforced per `mcps.md`.
+
+- extraction and field modeling: `<= 10 min` typical
+- mechanics and strategy synthesis: `<= 10 min`
+- coarse simulation sweeps: `<= 15 min`
+- full core run: `<= 35 min`
 
 ## Canonical Artifacts
-- `/context/game_spec.json` is the single source of truth for shared game semantics.
-- `/artifacts/{game_year}/manifest.json` lists all generated artifacts, hashes, and generator versions.
-- `/artifacts/{game_year}/field_layout_reference.json` stores dimension-token references plus blue/red alliance reference frames derived from the drawing PDF.
-- `/artifacts/{game_year}/apriltag_field_layout.json` stores deployable WPILib `AprilTagFieldLayout` JSON with top-level `tags[]` and `field.{length,width}`.
-- `/artifacts/{game_year}/wpilib_project/src/main/java/frc/robot/FieldConstants.java` centralizes deploy-first AprilTag layout loading and alliance mirroring helpers.
-- `/artifacts/{game_year}/sim_arch_feedback.json` stores architecture sweep outcomes and strategy update recommendations.
-- `/artifacts/{game_year}/validation_report.json` is required for release decisions.
+
+- `/context/game_spec.json` is the shared normalized game view.
+- `/artifacts/{game_year}/manifest.json` records generated artifacts, hashes, and generator versions.
+- `/artifacts/{game_year}/field_model.json` stores normalized field geometry and interaction locations.
+- `/artifacts/{game_year}/strategy_packet.json` stores structured strategic assumptions.
+- `/artifacts/{game_year}/simulation_model.json` stores the game-specific simulation model.
+- `/artifacts/{game_year}/sim_summary.json` stores ranked strategy results from simulation sweeps.
+- `/artifacts/{game_year}/team_decision_packet.md` stores the human questions needed before robot design.
+- `/artifacts/{game_year}/validation_report.json` is required before treating a run as usable.
 
 ## Operational Risks and Mitigation
-- OCR ambiguity in scanned tables:
-   - Mitigation: dual extraction path (`pymupdf` + table parser) and confidence-based review queue.
-- Strategy overfitting to simulation assumptions:
-   - Mitigation: enforce scenario diversity and log-grounded calibration in each iteration.
-- Drift between docs and implementation:
-   - Mitigation: nightly schema checks and artifact manifest validation.
+
+- OCR ambiguity in scanned manuals:
+  Mitigation: dual extraction path plus confidence flags and a manual review queue for low-confidence clauses.
+- Field drawing ambiguity:
+  Mitigation: preserve raw dimension tokens, page references, and unresolved geometry questions in `field_layout_reference.json`.
+- Strategy overconfidence from rough simulation:
+  Mitigation: report sensitivity ranges and avoid treating simulated scores as predictions.
+- Premature robot implementation:
+  Mitigation: stop the core pipeline at `team_decision_packet.md` and require human design inputs before any codegen phase.
+
+## Post-Analysis Robot Handoff
+
+A later robot implementation phase may consume these artifacts, but only after the team supplies selected tasks, robot architecture, mechanisms, sensors, and acceptance tests.

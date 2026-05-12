@@ -1,45 +1,54 @@
-# FRC Game Analysis & Dev Agents
+# FRC Game Analysis & Simulation Agents
 
-## Agent Registry
+## Core Agent Registry
+
 | Agent | Role | Core Capabilities | Tools/Dependencies | I/O Contract |
 |-------|------|-------------------|--------------------|--------------|
-| `pdf_extractor` | Manual Parser | PDF→text, image/table extraction, OCR fallback, rule clause mapping | `pymupdf`, `tabula-py`, `layoutparser` | Input: game manual PDF + field drawing PDF → Output: Structured JSON (rules, constraints, scoring, field layout reference, AprilTag layout template) |
-| `mechanic_analyst` | Game Logic Modeler | Constraint graph, state machine, resource flow, win condition modeling | `networkx`, `sympy`, rule JSON | Input: Rule JSON → Output: Game mechanics spec (physics, scoring, penalties, time limits) |
-| `strategy_architect` | Tactic Designer | Alliance composition, resource allocation, risk/reward mapping, Monte Carlo prep | `numpy`, `scipy`, strategy templates | Input: Mechanics spec → Output: Strategy doc (markdown/PDF) + simulation parameters |
-| `robot_codegen` | WPILib Generator | Command-based architecture, subsystem wiring, PID config, motor/sensor mapping | `wpilib-template`, `jinja2`, C++/Java | Input: Strategy spec + AprilTag field layout JSON → Output: WPILib project skeleton + core subsystems + deploy layout assets |
-| `power_engineer` | Electrical Modeler | Current draw estimation, battery sag, duty cycle, thermal limits | `pandas`, `matplotlib`, motor curves | Input: Robot design → Output: Power usage app (web) + CSV/JSON budget |
-| `scout_dev` | Scouting App Builder | Data schema, UI logic, export/import, API sync | `streamlit`/`flutter`, `sqlite`, `fastapi` | Input: Scoring/penalty rules → Output: Scouting app + DB schema |
-| `sim_engineer` | 2D/Physics Simulator | TideSim-style multiplayer game loop, collision detection, kinematics, architecture parameter sliders | `pygame`/`p5.js`, `box2d` | Input: Robot params + field layout reference → Output: Interactive 2D sim + parameter JSON + `sim_arch_feedback.json` |
-| `mc_simulator` | Monte Carlo Strategist | 3v3 alliance simulation, win-rate estimation, parameter sweeps, architecture sensitivity cross-checks | `ray`, `numpy`, `seaborn` | Input: Sim params + rules + optional `sim_arch_feedback.json` → Output: Win-rate heatmap + strategy recommendations + architecture sensitivity report |
-| `advscope_integrator` | Logging Formatter | WPILib log→AdvantageScope CSV, trajectory export, replay sync | `wpilib-log`, `csvkit` | Input: Robot code → Output: `.csv` logs + AdvantageScope config |
-| `qa_validator` | Rule & Physics Auditor | FRC rule compliance, constraint checking, simulation vs reality bounds | `pytest`, rule DB, physics bounds | Input: All outputs → Output: Validation report + fix directives |
+| `pdf_extractor` | Manual and drawing extractor | PDF text extraction, table parsing, OCR fallback, citation capture, raw field reference extraction | `pymupdf`, `pdfplumber`, table extractor | Input: game manual PDF + field drawing PDF → Output: `rules.json`, `field_layout_reference.json`, `extraction_report.md` |
+| `field_modeler` | Field geometry modeler | Field coordinate normalization, zone modeling, scoring location extraction, alliance mirroring | geometry helpers, schema validators | Input: `field_layout_reference.json` + field drawing PDF → Output: `field_model.json`, `apriltag_field_layout.json` |
+| `mechanic_analyst` | Game logic modeler | State modeling, scoring transitions, possession/resource rules, timing constraints | `networkx`, `sympy`, rule JSON | Input: `rules.json` + `field_model.json` → Output: `mechanics.json` |
+| `strategy_architect` | Game analyst | Role decomposition, task prioritization, cycle assumptions, foul-risk analysis, human-readable strategy summary | `numpy`, strategy templates | Input: `rules.json` + `field_model.json` + `mechanics.json` → Output: `strategy_packet.json`, `strategy_brief.md`, `team_decision_packet.md` |
+| `sim_engineer` | Game and strategy simulator | Seeded discrete-event or top-down sim, field-path sweeps, capability-profile comparison | `numpy`, `scipy`, lightweight sim code | Input: `field_model.json` + `mechanics.json` + `strategy_packet.json` → Output: `simulation_model.json`, `sim_params.json`, `sim_summary.json`, `simulation_report.md` |
+| `qa_validator` | Validation gate | Schema checks, citation checks, field consistency checks, reproducibility checks | `pytest`, schema validators | Input: all core artifacts → Output: `validation_report.json` |
 
 ## Orchestration Protocol
-- **Sequence:** `pdf_extractor` → `mechanic_analyst` → `strategy_architect` → parallel `robot_codegen`, `power_engineer`, `scout_dev`, `sim_engineer`, `mc_simulator` → `advscope_integrator` → `qa_validator` → feedback rerun of `strategy_architect` when `sim_arch_feedback.json` indicates architecture ranking changes.
-- **Fallback:** Any agent failing validation triggers `qa_validator` → rework directive → retry (max 3)
-- **State:** All outputs versioned in `/artifacts/{game_year}/`. Shared context via `/context/game_spec.json`
+
+- **Sequence:** `pdf_extractor` → `field_modeler` → `mechanic_analyst` → `strategy_architect` → `sim_engineer` → `qa_validator`
+- **Feedback loop:** if simulation exposes impossible assumptions or unstable strategy rankings, rerun `strategy_architect` and then `sim_engineer`
+- **State:** outputs are versioned in `/artifacts/{game_year}/`; shared normalized context lives in `/context/game_spec.json`
+- **Fallback:** any failed stage returns a rework directive and stops downstream stages until fixed
+
+## Human-Gated Future Agents
+
+These are intentionally outside the core manual-analysis pipeline:
+- `robot_codegen`, after the team provides robot design inputs and selected tasks
+- `power_engineer`, after robot hardware choices exist
+- `scout_dev`, after the analysis artifacts stabilize
+- `advscope_integrator`, after real or simulated robot logs exist
 
 ## Agent Interface Standards
+
 - All agent outputs must include:
-	- `success` (bool)
-	- `artifact_paths` (array)
-	- `warnings` (array)
-	- `citations` (array of `{section_id, page}` where applicable)
+  - `success` (bool)
+  - `artifact_paths` (array)
+  - `warnings` (array)
+  - `citations` (array of `{section_id, page}` where applicable)
 - All agent failures must include:
-	- `error_code`
-	- `error_message`
-	- `retryable` (bool)
+  - `error_code`
+  - `error_message`
+  - `retryable` (bool)
 
 ## Quality Ownership
-- `pdf_extractor`: extraction completeness and citation fidelity.
-- `mechanic_analyst`: constraint correctness and state-machine validity.
-- `strategy_architect`: strategy assumptions and scenario coverage.
-- `robot_codegen`: compile validity and command-based architecture conformance.
-- `power_engineer`: electrical envelope conformance.
-- `sim_engineer` and `mc_simulator`: reproducible simulation outputs.
-- `qa_validator`: final release gate authority.
+
+- `pdf_extractor`: extraction completeness, confidence labels, and citation fidelity
+- `field_modeler`: coordinate consistency, zone correctness, and field-drawing traceability
+- `mechanic_analyst`: correctness of states, transitions, and hard constraints
+- `strategy_architect`: usefulness and traceability of strategic recommendations
+- `sim_engineer`: reproducible relative rankings and clearly stated assumptions
+- `qa_validator`: final release gate authority for analysis artifacts
 
 ## Concurrency Rules
-- Parallel agents must not write to shared files directly.
-- Shared updates happen only through orchestrator-managed merge into `/context/game_spec.json`.
-- Artifact naming must be deterministic to support caching and diffing.
+
+- Keep the core pipeline mostly sequential to reduce coordination overhead.
+- Parallelize only internal work units that do not mutate shared state, such as page extraction or seeded sim batches.
+- Artifact naming must remain deterministic to support caching and diffing.

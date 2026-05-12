@@ -1,46 +1,52 @@
 # Iteration & Validation Protocol
-- **Trigger:** New robot logs, sim drift, manual override, or new architecture-search output (`sim_arch_feedback.json`).
+
+- **Trigger:** new manual version, new field drawing, Team Update, Q&A clarification, changed extraction confidence, changed strategy assumptions, or unstable simulation result
 - **Process:**
-  1. Parse logs → identify bottleneck (e.g., PID overshoot, scoring miss)
-  2. Cross-reference with sim bounds
-  3. Generate targeted patch (PID tune, command refactor, strategy shift)
-  4. Run regression sim (1k runs)
-  5. If Δperformance > threshold → commit patch
-  6. Log changes to `/artifacts/{game_year}/iteration_log.json`
-  7. Re-run manual insight analysis if architecture rankings changed materially
-- **Validation Gates:**
-  - Rule compliance (FRC manual)
-  - Electrical limits (12V, thermal)
-  - Physics bounds (speed, acceleration, collision)
-  - Simulation convergence (MC confidence >95%)
-  - Architecture feedback contract validity (required before reranking when non-template `sim_arch_feedback.json` is present)
-- **Fallback:** Any gate failure → `qa_validator` → rework → max 3 retries
+  1. Re-extract changed rule or field sections.
+  2. Regenerate `field_model.json` if drawing-derived geometry changed.
+  3. Regenerate `mechanics.json` and `strategy_packet.json`.
+  4. Re-run simulation scenarios affected by the changed assumptions.
+  5. Run validation gates.
+  6. Record the result in `/artifacts/{game_year}/run_history.json` and `validation_report.json`.
+- **Fallback:** any failed gate returns a concrete rework directive and blocks downstream promotion
+
+## Validation Gates
+
+- Rule coverage for scoring, timing, penalties, field zones, and robot constraints
+- Field geometry coverage for dimensions, zones, scoring locations, game-piece locations, and alliance reference frames where available
+- Citation coverage for every extracted rule and every strategic recommendation
+- Schema validation for all JSON artifacts
+- Simulation reproducibility under fixed seeds
+- Simulation assumption transparency in `simulation_report.md`
 
 ## Quantitative Thresholds
-- PID improvement candidate accepted only if:
-  - settling time improves by >= 10%, or
-  - overshoot decreases by >= 15%.
-- Strategy patch accepted only if regression sim shows:
-  - win-rate increase >= 2.0 points, or
-  - equivalent win-rate with lower penalty risk.
-- Monte Carlo confidence interval width must be <= 0.03 for reported top strategies.
-- Architecture promotion accepted only if candidate improves risk-weighted value by >= 5% across at least 3 seeds or >= 50 human-play matches.
-- Invalid architecture feedback artifacts fail fast when enum values or KPI/robot-parameter numeric bounds are violated.
+
+- Every scoring action, penalty, phase boundary, protected zone, and major robot constraint in `rules.json` must carry a citation.
+- Field dimensions used in simulation must trace to `field_layout_reference.json` or be explicitly labeled as assumptions.
+- A strategy recommendation is acceptable only if the top role ordering is stable across at least 3 fixed seeds or a deterministic sweep.
+- A simulation finding should be labeled `low confidence` if sensitivity sweeps change the top recommendation under plausible cycle-time ranges.
+- Validation must fail fast on missing citations, broken artifact schemas, or impossible mechanics constraints.
 
 ## Defect Triage Levels
-- Critical: rule compliance violations, unsafe electrical outputs, corrupted artifacts.
-- Critical: invalid `sim_arch_feedback.json` contract when a non-template artifact is supplied.
-- Major: performance regression beyond threshold, invalid simulation assumptions.
-- Major: architecture recommendation not reproducible across seeds or human-play cohorts.
-- Minor: formatting, non-blocking UX issues, weak recommendation confidence.
+
+- Critical: uncited or contradictory rule extraction, corrupted artifacts, impossible mechanics, unusable field model
+- Major: unstable strategy ranking, missing simulation assumptions, important field geometry gaps
+- Minor: formatting issues, weak confidence labels, non-blocking documentation drift
 
 ## Validation Output Contract
+
 - Required output file: `/artifacts/{game_year}/validation_report.json`
 - Required fields:
   - `run_id`
-  - `gates` (pass/fail per gate)
-  - `defects` (with severity)
+  - `gates`
+  - `defects`
   - `recommended_actions`
   - `release_decision`
-  - `architecture_feedback_status` (ingested/skipped/invalid)
-  - `architecture_feedback_issues[]` (contract validation failures, if any)
+  - `extraction_status`
+  - `field_model_status`
+  - `strategy_status`
+  - `simulation_status`
+
+## Robot Handoff Boundary
+
+If humans decide to proceed to robot implementation, the analysis pipeline should hand off `team_decision_packet.md`, `strategy_packet.json`, `field_model.json`, and `mechanics.json` to a separate robot-design workflow. That workflow must collect team-specific robot design inputs before any robot code is generated.

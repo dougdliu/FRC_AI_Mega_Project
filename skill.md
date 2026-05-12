@@ -1,386 +1,136 @@
 # AI Skill Definitions
 
+## Scope Note
+
+The core project focuses on understanding the game before robot implementation.
+
+Core skills should support:
+- cited manual extraction
+- field drawing extraction and field modeling
+- game mechanics modeling
+- strategic analysis and team decision support
+- rough game and strategy simulation
+- validation and iteration
+
+Robot code generation is a later, human-gated workflow after the team selects tasks and provides robot design inputs.
+
 ## Cross-Skill Standards
+
 - Every skill output must include metadata:
-	- `schema_version`
-	- `generated_at`
-	- `source_manual_hash`
+  - `schema_version`
+  - `generated_at`
+  - `source_manual_hash`
+  - `source_field_drawing_hash` when field data is used
+  - input hashes for any non-manual artifacts it depends on
 - Every recommendation-producing skill must include source citations.
 - Confidence labels are required for extracted or inferred content:
-	- `high`: direct rule text match
-	- `medium`: derived from tightly related context
-	- `low`: ambiguous, conflicting, or OCR-uncertain
+  - `high`: direct rule or drawing match
+  - `medium`: derived from nearby cited context
+  - `low`: ambiguous, conflicting, OCR-uncertain, or drawing-uncertain
 
 ## Shared Acceptance Checks
-- JSON outputs pass schema validation.
-- No unresolved placeholders remain in generated code or markdown.
-- Artifact paths are deterministic for reproducible reruns.
-- Validation logs are written to `/artifacts/{game_year}/validation/`.
 
-## Skill: Consolidated FRC Manual Insight Analysis
-- **Intent:** Use a single worksheet-driven framework (derived from Team 2791/6328 and FIRST kickoff worksheets) to convert manual text into actionable game insights. Operates as the strategic reasoning layer above PDF Rule Extraction — prefer consuming `rules.json` when available to avoid redundant PDF parsing; fall back to raw PDF only when `rules.json` has not yet been produced.
-- **Input:** `rules.json` (preferred, from PDF Rule Extraction) or game manual PDF (fallback), plus the field-dimension drawing PDF for the same game year. Team Updates and Q&A clarifications as supplemental inputs. Optional historical game analogs.
-- **Simulation Feedback Input (optional but preferred after first run):** `sim_arch_feedback.json` generated from 2D sim human playtests and/or RL 3v3 self-play architecture sweeps.
-- **Output:**
-	- `manual_insight_packet.json`
-	- `strategy_hypotheses.md`
-	- `manual_insight_analysis.md` — comprehensive human-readable report covering all 10 primary sections, the six Question Matrix answers with citations, and open Q&A items
-	- `sim_arch_feedback.json` — architecture search evidence bundle (human-play and/or RL self-play) consumed on subsequent insight passes
-	- `risk_register.json`
-	- `citation_index.json`
-- **Primary Sections (in required order):**
-	1. Match periods and phase changes (auto, teleop, endgame)
-	2. Field zones, field elements, and protected areas
-	3. Game pieces (types, possession limits, recycling loops)
-	4. Scoring map (all scoring actions, values, constraints)
-	5. Penalties and foul economics (offset cost to recover)
-	6. Ranking points and tie-breaker mechanics
-	7. Robot constraints (weight, frame, extension, height windows)
-	8. Strategy synthesis (auto, teleop, endgame, tournament)
-	9. Chokehold and counter-strategy analysis
-	10. Theoretical maxima (single robot and full alliance by phase)
-- **Question Matrix (must be answered with citations):**
-	- What are the highest leverage scoring actions per phase?
-	- Which actions are cooperative versus independent in 3v3 play?
-	- Which field locations create defensive choke points or safe scoring lanes?
-	- Which penalties are most likely and most expensive in expected points?
-	- Which RP paths are solo-capable versus alliance-dependent?
-	- Which minimum robot capabilities maximize pick probability?
-- **Scoring Insight Rubric:**
-	- `value_per_second`: expected points contribution divided by cycle time
-	- `risk_weighted_value`: value adjusted by foul likelihood and execution variance
-	- `alliance_dependency_score`: how much success depends on partners
-	- `defense_sensitivity`: performance drop under moderate defense
-	- `implementation_complexity`: mechanism + software + driver training effort
-- **Cycle-Time Modeling Requirements (mandatory in human-readable report):**
-	- Model the four cycle components explicitly: drive-to-acquire, acquire, drive-to-score, score.
-	- Use drive-time envelope `1-9 s` for both outbound and return legs.
-	- For single-piece robots, use intake and scoring envelopes `0.5-2.0 s` each.
-	- For limited multi-piece robots, use intake-rate envelope `1-10 pieces/s`; evaluate multiple planned loads up to assumed capacity.
-	- For unlimited-storage assumption, use intake-rate envelope `1-15 pieces/s`; evaluate multiple planned loads and note practicality limits.
-	- For multi-piece scoring, use scoring-rate envelope `1-15 pieces/s`.
-	- Estimate geometric upper-bound storage capacity from game-piece dimensions plus robot perimeter/height envelope, then apply a `10-20%` volume cut for chassis/mechanism occupancy.
-	- Include current swerve metagame assumptions: free-speed envelope `~13-22 ft/s` and time-to-full-speed envelope `1-5 s`.
-	- Include an endgame decision table comparing endgame action EPS vs continuing primary-objective EPS, including break-even time.
-	- Include a simulation-driven architecture search subsection describing how human playtest and RL self-play results update cycle assumptions and strategy rankings.
-- **Architecture Search Requirements (mandatory):**
-	- The 2D sim must support parameterized robot archetypes for drive, intake, storage, scoring, and climb behavior.
-	- Human play mode must support multiplayer 3v3 matches with architecture parameter presets and per-match KPI logging.
-	- RL mode must support six-agent 3v3 self-play with randomized architecture parameters and seed-controlled reproducibility.
-	- Architecture evaluations must report at least: `match_points`, `value_per_second`, `foul_points_conceded`, `tower_success_rate`, `defense_sensitivity`, `alliance_dependency_score`.
-	- Feedback outputs must include both top-performing architecture sets and failure modes (high-variance or foul-prone designs).
-- **Output Contract (minimum keys):**
-	- `metadata`: `game_year`, `manual_version`, `schema_version`, `generated_at`
-	- `phase_model`: `auto`, `teleop`, `endgame`
-	- `scoring_actions[]`: `id`, `phase`, `base_points`, `constraints`, `citations[]`
-	- `penalty_model[]`: `rule_id`, `cost_estimate`, `common_trigger`, `avoidance_guidance`
-	- `rp_model[]`: `rp_name`, `requirements`, `solo_feasibility`, `alliance_dependencies`
-	- `strategy_candidates[]`: `name`, `assumptions`, `expected_value`, `key_risks`
-	- `open_questions[]`: unresolved ambiguities requiring Q&A follow-up
-	- `architecture_optimization`: `human_play_loop`, `rl_self_play_loop`, `feedback_contract`
-- **Validation:**
-	- No section may be left empty.
-	- Every strategic claim must map to at least one citation.
-	- Contradictions across rule sections must be flagged in `open_questions`.
-	- At least three distinct strategy candidates must be generated (safe/balanced/high-upside).
-	- If `sim_arch_feedback.json` is present and non-template, it must pass contract validation before its outputs can rerank strategy candidates.
-	- Valid `source` values: `human_playtest`, `rl_self_play`, `hybrid`.
-	- Valid `confidence` values: `low`, `medium`, `high`.
-	- KPI ranges: `match_points` 0-500, `value_per_second` 0-10, `foul_points_conceded` 0-200, `tower_success_rate` 0-1, `defense_sensitivity` 0-1, `alliance_dependency_score` 0-1.
-	- Robot-parameter ranges: `drive_free_speed_fps` 0-30, `drive_time_to_full_speed_s` 0-10, `intake_rate_pieces_per_s` 0-30, `storage_capacity_assumed` 0-100, `score_rate_pieces_per_s` 0-30.
-- **Prompt Template:** `Analyze the FRC game manual using the consolidated kickoff worksheet framework. Extract rule-grounded facts first, then derive strategy insights for auto, teleop, endgame, ranking, and playoff outcomes. Return the output contract fields exactly, include citations for every non-trivial claim, and flag ambiguities for Q&A follow-up.`
-- **Reference Basis:**
-	- Team 6328 kickoff worksheet (Chief Delphi PDF)
-	- Team 2791 kickoff worksheet (Chief Delphi PDF)
-	- FIRST Kickoff Worksheet (rev Sep 2025 PDF)
-	- FIRST Kickoff Breakdown Worksheet (PDF)
+- JSON outputs pass schema validation.
+- No unresolved placeholders remain in generated Markdown or JSON.
+- Artifact paths are deterministic for reproducible reruns.
+- Validation logs are written under `/artifacts/{game_year}/validation/`.
 
 ## Skill: PDF Rule Extraction
-- **Role:** Structured extraction foundation. Produces the machine-readable `rules.json` that both **Consolidated FRC Manual Insight Analysis** (strategic reasoning) and **Game Mechanics Modeling** (computational modeling) consume. Does not perform strategic analysis — extraction only.
-- **Input:** Game manual PDF plus field-dimension drawing PDF (via `anthropic/pdf` skill). Also accepts Team Updates and Q&A addenda as supplemental PDFs to merge into output.
-- **Output:** `rules.json` (sections, clauses, constraints, scoring, field dimensions, time limits, equipment limits), `field_layout_reference.json`, `apriltag_field_layout.json`
-- **Field-layout artifact contract:** `field_layout_reference.json` must include extracted dimension tokens plus blue-side and red-side reference frames. `apriltag_field_layout.json` must use WPILib `AprilTagFieldLayout` JSON shape with top-level `tags[]` and `field.length` / `field.width`.
-- **Output Contract (minimum keys):** `sections[]` (id, title, text, page), `scoring[]` (action, points, phase, constraints), `penalties[]` (rule_id, type, points), `field` (dimensions, zones, elements), `timing` (auto_s, teleop_s, endgame_s), `equipment_limits` (weight, frame, extension, height), `citations[]` (page, section_id, raw_text)
-- **Tools:** `anthropic/pdf` (primary extraction), `pymupdf`, regex clause parser, table extractor
-- **Downstream consumers:** `Consolidated FRC Manual Insight Analysis` (preferred input over raw PDF), `Game Mechanics Modeling`
-- **Validation:** All game objectives, time limits, penalties, and field measurements present. Every extracted clause must include page and section citation. Cross-check section count against PDF table of contents.
-- **Prompt Template:** `Extract all game rules, constraints, scoring, penalties, field dimensions, time limits, and field-layout reference data from the game manual PDF plus field-dimension drawing PDF. Output rules.json with sections: {sections, scoring, penalties, field, timing, equipment_limits, citations}, plus field_layout_reference.json and apriltag_field_layout.json. Do not interpret or analyze — extract only.`
+
+- **Intent:** Convert the game manual into machine-readable cited rules. Extraction only; no strategy recommendations.
+- **Input:** game manual PDF, optional Team Updates or Q&A addenda
+- **Output:** `rules.json`, `extraction_report.md`
+- **Output contract:**
+  - `sections[]`: `id`, `title`, `text`, `page`
+  - `scoring[]`: `action`, `points`, `phase`, `constraints`, `citations[]`
+  - `penalties[]`: `rule_id`, `type`, `points`, `citations[]`
+  - `field_rules`: field-related manual clauses
+  - `timing`: `auto_s`, `teleop_s`, `endgame_s`
+  - `equipment_limits`: `weight`, `frame`, `extension`, `height`
+- **Validation:** all key rule sections present; every extracted rule carries page and section citation; low-confidence clauses are listed in `extraction_report.md`
+
+## Skill: Field Drawing Extraction and Modeling
+
+- **Intent:** Convert field drawings into traceable references and a normalized simulation-ready field model.
+- **Input:** field-dimension drawing PDF, `rules.json`
+- **Output:** `field_layout_reference.json`, `field_model.json`, `apriltag_field_layout.json` when applicable
+- **Output contract:**
+  - `field_layout_reference.json`: raw dimension tokens, page references, drawing labels, confidence notes
+  - `field_model.json`: field dimensions, reference frames, zones, scoring locations, game-piece starts, obstacles
+  - `apriltag_field_layout.json`: WPILib-compatible tag layout when source drawings define tags
+- **Validation:** normalized coordinates are traceable to drawing references; unresolved geometry is flagged explicitly
 
 ## Skill: Game Mechanics Modeling
-- **Role:** Formal computational modeling layer. Converts `rules.json` into a machine-executable model (state machine + constraint graph) that the Monte Carlo simulator and 2D physics sim consume directly. Distinct from **Consolidated FRC Manual Insight Analysis**, which produces human-readable strategic outputs — this skill produces simulation-ready data structures.
-- **Input:** `rules.json` and `field_layout_reference.json` (from PDF Rule Extraction). Also accepts `manual_insight_packet.json` as a supplemental cross-reference to flag modeling gaps.
-- **Output:** `mechanics.json` (state machine, resource flow graph, win conditions, physics constraints)
-- **Output Contract (minimum keys):** `states[]` (id, phase, entry_conditions, exit_conditions), `transitions[]` (from_state, to_state, action, duration_s, point_delta), `resource_constraints[]` (resource, limit, scope), `win_conditions[]` (condition, tiebreaker_order), `physics` (max_speed_mps, max_accel_mps2, robot_footprint_m)
-- **Tools:** `networkx` (constraint graph), constraint solver, `sympy` (physics bounds)
-- **Downstream consumers:** `Monte Carlo Strategy Simulation`, `2D Physics Simulation`, `WPILib Robot Code Generation`
-- **Validation:** No circular state transitions. All scoring actions from `rules.json` must appear as transitions. All time limits enforced as state duration bounds. Resource constraints must be satisfiable (constraint solver passes). Cross-check `win_conditions` against `rp_model` in `manual_insight_packet.json` if available.
-- **Prompt Template:** `Convert rules.json into a formal game mechanics model. Build a state machine with states for each game phase and transitions for each scoring action. Model resource constraints and win conditions as computable constraints. Output mechanics.json — do not include strategy recommendations; this is a simulation input, not a strategy document.`
 
-## Skill: WPILib Robot Code Generation
-- **Input:** `mechanics.json`, `strategy.md`, `apriltag_field_layout.json`
-- **Output:** WPILib project (Java/C++), subsystems, commands, PID configs, generated `FieldConstants.java`
-- **Tools:** `jinja2`, wpilib-template, motor/sensor DB
-- **WPILib Version:** WPILib 2026 (current year). Always target the latest 2026 release. Verify the exact version at https://github.com/wpilibsuite/allwpilib/releases before generating code; do not hardcode a patch version.
-- **Vendor Dependencies (always include, always use latest stable release):**
-  - **AdvantageKit** — Verify latest at https://github.com/Mechanical-Advantage/AdvantageKit/releases. Add the vendordep JSON from the AdvantageKit release assets. Use `@AutoLog` annotations on all subsystems.
-  - **CTRE Phoenix v6** — Verify latest at https://maven.ctr-electronics.com/release/com/ctre/phoenix6/tools/. Use the v6 API (`TalonFX`, `CANcoder`, `Pigeon2`); never generate v5 (`com.ctre.phoenix`) imports.
-  - **PathplannerLib** — Verify latest at https://github.com/mjansen4857/pathplanner/releases. Use `AutoBuilder.configure()` for auto routine wiring and `PathPlannerPath.fromPathFile()` for named paths.
-  - **photonlib** — Verify latest at https://github.com/PhotonVision/photonvision/releases. Use `PhotonCamera` and `PhotonPoseEstimator` for vision-assisted odometry.
-  - **WPILib New Commands** — Included in WPILib 2026 core (`edu.wpi.first.wpilibj2.command`). Do not add as a separate vendordep; confirm the `commands` artifact is present in `build.gradle` / `build.json`.
-- **Vendordep fetch rule:** Before writing any vendordep JSON inline, fetch the `.json` URL from the library's official release page to get the exact artifact version string. Never construct version strings from memory.
-- **Validation:** Compiles with WPILib 2026, uses command-based paradigm, includes all required subsystems. Reject output that imports deprecated or pre-2026 APIs. All five vendor libraries must be present in the generated project's vendordeps or `build.gradle` dependencies block.
-- **Prompt Template:** `Generate a command-based WPILib project targeting WPILib 2026 with vendor dependencies: AdvantageKit (latest), CTRE Phoenix v6 (latest), PathplannerLib (latest), photonlib (latest), WPILib New Commands (2026 core). Include subsystems for {intake, drive, scoring, lifting}. Add PID configs, auto routines using PathplannerLib, and teleop commands. Follow WPILib 2026 standards and API conventions.`
+- **Intent:** Turn `rules.json` and `field_model.json` into a simulation-ready mechanics model.
+- **Input:** `rules.json`, `field_model.json`
+- **Output:** `mechanics.json`
+- **Output contract:**
+  - `states[]`: `id`, `phase`, `entry_conditions`, `exit_conditions`
+  - `transitions[]`: `from_state`, `to_state`, `action`, `duration_s`, `point_delta`, `citations[]`
+  - `resource_constraints[]`
+  - `phase_limits`
+  - `scoring_model`
+  - `penalty_model`
+- **Validation:** all scoring actions appear as transitions; time limits are enforced; contradictions are surfaced rather than guessed away
 
-## Skill: Power Usage Modeling
-- **Input:** Robot design, motor specs, duty cycles
-- **Output:** Web app (Streamlit) + `power_budget.csv`
-- **Tools:** `pandas`, motor curve DB, thermal model
-- **Validation:** Peak/avg current within 12V battery limits, thermal warnings at >80% duty, matches FRC electrical guidelines.
-- **Prompt Template:** `Estimate current draw per subsystem under {scoring, intake, travel}. Generate power_budget.csv and a Streamlit dashboard showing real-time draw vs battery voltage.`
+## Skill: Strategy Synthesis
 
-## Skill: Scouting App Development
-- **Input:** Scoring/penalty rules, alliance structure
-- **Output:** Web/mobile app, SQLite schema, export API
-- **Tools:** `streamlit`/`flutter`, `fastapi`, `sqlite`
-- **Validation:** Captures all scoring events, penalties, alliance roles, and match outcomes. Exportable to JSON/CSV.
-- **Prompt Template:** `Build a scouting app that logs {scoring_types, penalties, alliance_role, match_number}. Include offline mode, auto-export, and validation rules.`
+- **Intent:** Produce a concise, cited explanation of the game, likely task priorities, and the decisions humans must make before robot design.
+- **Input:** `rules.json`, `field_model.json`, `mechanics.json`
+- **Output:** `strategy_packet.json`, `strategy_brief.md`, `team_decision_packet.md`
+- **Output contract:**
+  - `game_summary`
+  - `task_candidates[]`
+  - `role_candidates[]`
+  - `scoring_priorities[]`
+  - `cycle_assumptions[]`
+  - `risk_notes[]`
+  - `open_questions[]`
+  - `team_decisions_needed[]`
+- **Validation:** every recommendation has a citation; contradictions are listed in `open_questions`; at least a safe, balanced, and high-upside strategy set is considered
 
-## Skill: 2D Physics Simulation
-- **Input:** Robot params (size, speed, physics, intake width, scoring type) + `field_layout_reference.json`
-- **Goal:** Create a lightweight, TideSim-style top-down multiplayer game for early-season robot architecture decisions.
-- **Output:** Interactive canvas sim + `sim_params.json` + `sim_arch_feedback.json`
-- **Tools:** `pygame`/`p5.js`, `box2d`, kinematics solver
-- **Modes (required):**
-	- Human playtest mode: 3v3 multiplayer with configurable architecture presets and KPI capture.
-	- RL self-play mode: six controlled agents in repeated 3v3 matches for architecture search.
-- **Validation:** Collision detection accurate, speed/acceleration match specs, parameter sliders update in real-time, KPI logs deterministic under fixed seeds.
-- **Prompt Template:** `Create a 2D top-down 3v3 simulation game where robots match {size, speed, intake_width, storage, shooter_rate, climb_profile}. Support both human multiplayer playtests and RL self-play sweeps, then export sim_arch_feedback.json with architecture rankings and KPI summaries.`
+## Skill: Game and Strategy Simulation
 
-## Skill: Monte Carlo Strategy Simulation
-- **Input:** 3v3 alliance configs, robot params, game rules
-- **Output:** Win-rate heatmap, strategy recommendations, architecture sensitivity report
-- **Tools:** `ray`, `numpy`, `seaborn`
-- **Validation:** 10k+ runs per config, confidence intervals reported, matches FRC alliance dynamics, and includes cross-check against 2D sim architecture rankings.
-- **Prompt Template:** `Run 3v3 Monte Carlo simulations for {alliance_compositions}. Sweep robot architecture parameters, compare outcomes with 2D sim feedback, and output win-rate heatmaps plus architecture sensitivity findings.`
+- **Intent:** Compare rough strategy choices and task priorities without requiring a chosen team robot design.
+- **Input:** `field_model.json`, `mechanics.json`, `strategy_packet.json`
+- **Output:** `simulation_model.json`, `sim_params.json`, `sim_summary.json`, `simulation_report.md`
+- **Approach:** discrete-event or simple top-down simulation with abstract capability profiles, fixed seeds, and clear assumptions
+- **Validation:** outputs are reproducible under fixed seeds; assumptions and warnings are surfaced explicitly; relative rankings are more important than absolute score accuracy
 
-## Skill: AdvantageScope Log Integration
-- **Input:** WPILib code, simulation outputs
-- **Output:** `.csv` logs, AdvantageScope config
-- **Tools:** `wpilib-log`, `csvkit`
-- **Validation:** Matches WPILib log schema, replayable in AdvantageScope, includes trajectory/telemetry.
-- **Prompt Template:** `Generate WPILib-compliant logs for {drive, scoring, lifting}. Output CSVs and AdvantageScope config for trajectory replay.`
+## Skill: Validation and Iteration
 
-## Skill: Iterative Log-Assisted Dev
-- **Input:** Robot logs, simulation results, performance gaps
-- **Output:** Code patches, PID retuning, strategy adjustments
-- **Tools:** `pandas`, `scipy.optimize`, diff generator
-- **Validation:** Fixes address root causes, regression tests pass, matches logged telemetry.
-- **Prompt Template:** `Analyze logs for {drift, lag, missed scoring}. Generate targeted code patches and PID retuning. Validate against simulation bounds.`
+- **Intent:** Decide whether an analysis run is usable and identify the next fix when it is not.
+- **Input:** all generated core artifacts
+- **Output:** `validation_report.json`, optional fix directives
+- **Validation gates:** citation coverage, field-model consistency, schema health, mechanics validity, simulation reproducibility, strategy traceability
+
+## Human-Gated Future Skills
+
+These are intentionally outside the core analysis pipeline:
+- WPILib Robot Code Generation
+- Maple-Sim Robot Validation
+- Power Usage Modeling
+- Scouting App Development
+- AdvantageScope Log Integration
+- RL or self-play architecture search
+- Release automation and artifact publishing
 
 ## Skill Dependency Graph
 
-### Core Pipeline Flow (internal skills)
 ```
 [anthropic/pdf]
-	└─> PDF Rule Extraction  ──────────────────────────────────┐
-            │                                                   │
-            ├─> Consolidated FRC Manual Insight Analysis        │  (strategic reasoning layer)
-            │       ──[anthropic/doc-coauthoring]               │
-            │       └─> strategy_hypotheses.md                  │
-            │               └─> WPILib Robot Code Generation ◄──┤
-            │                       ──[anthropic/claude-api]    │
-            │                                                   │
-			├─> AprilTag Field Layout JSON  ────────────────────┤  (codegen deploy artifact)
-			└─> Game Mechanics Modeling  ◄─────────────────────┘  (computational modeling layer)
-                    ──[codex/jupyter-notebook]
-                    └─> mechanics.json
-                            ├─> Monte Carlo Strategy Simulation  ──[codex/jupyter-notebook]
-                            │       └─> win-rate heatmaps + strategy recommendations
-                            │               └─> WPILib Robot Code Generation
-                            │                       └─> AdvantageScope Log Integration
-                            │                               └─> Iterative Log-Assisted Dev
-                            └─> 2D Physics Simulation  ──[codex/screenshot]
-                                    └─> AdvantageScope Log Integration
-
-[anthropic/xlsx]
-    └─> Power Usage Modeling  (parallel with robot_codegen)
-
-[anthropic/frontend-design] + [anthropic/webapp-testing] + [codex/playwright] + [codex/playwright-interactive]
-    └─> Scouting App Development  (parallel with robot_codegen)
-
-[codex/screenshot]
-    └─> 2D Physics Simulation  ──> AdvantageScope Log Integration
-
-[codex/security-best-practices] + [codex/security-threat-model]
-    └─> qa_validator  (gate over all parallel outputs)
-
-[codex/cli-creator]
-    └─> Pipeline CLI  (wraps orchestrator entry point)
-
-[anthropic/mcp-builder]  (used when implementing any of the 8 MCPs in mcps.md)
-    └─> all pipeline stages that call MCP servers
-
-[codex/gh-fix-ci]
-    └─> CI automation  (post-pipeline)
-
-[codex/yeet]
-    └─> Artifact release  (post-qa_validator)
+    -> PDF Rule Extraction
+    -> Field Drawing Extraction and Modeling
+        -> Game Mechanics Modeling
+            -> Strategy Synthesis
+                -> Game and Strategy Simulation
+                    -> Validation and Iteration
 ```
 
-### Dependency Rules
-- `anthropic/pdf` must be loaded before any PDF is read or written.
-- **PDF Rule Extraction runs first** and its `rules.json` is the shared input to both Consolidated FRC Manual Insight Analysis and Game Mechanics Modeling. Neither downstream skill should re-parse the raw PDF if `rules.json` exists.
-- **Field-dimension drawings are required peer inputs** to the manual for every game year; they are the source for field layout references, AprilTag layout JSON, sim geometry, and cycle-distance analysis.
-- **Consolidated FRC Manual Insight Analysis** and **Game Mechanics Modeling** are parallel consumers of `rules.json` — they run concurrently after extraction completes. Consolidated produces strategic outputs (human-readable); Game Mechanics produces simulation inputs (machine-readable).
-- `manual_insight_packet.json` (from Consolidated) may be passed to Game Mechanics Modeling as a cross-reference to catch modeling gaps, but is not required.
-- `sim_arch_feedback.json` (from 2D Physics Simulation and/or RL self-play) should be fed back into Consolidated FRC Manual Insight Analysis on subsequent runs to update cycle assumptions and strategy candidate rankings.
-- `anthropic/mcp-builder` (+ relevant reference file) must be loaded before implementing any MCP server.
-- `anthropic/claude-api` must be loaded before any agent writes code that calls Claude.
-- `codex/security-best-practices` and `codex/security-threat-model` must both be loaded at the `qa_validator` gate.
-- `codex/jupyter-notebook` is shared between `mechanic_analyst` and `mc_simulator`; both use `experiment` mode notebooks.
-- External Tier 2 skills (`webapp-testing`, `playwright`, `playwright-interactive`, `screenshot`, `doc-coauthoring`, `frontend-design`) are loaded only when their owning agent is active.
-- `codex/yeet` and `codex/gh-fix-ci` are post-pipeline; they do not block any upstream stage.
+## External Skill Notes
 
----
-
-## External Skill Registry
-
-External skills pulled from community repositories and vendored into `skills/`. Each entry lists the local path, source, pipeline stage, and activation instructions.
-
-### Tier 1 — Core Pipeline Skills (always available)
-
-#### `anthropic/pdf` — PDF Extraction & Generation
-- **Local path:** `skills/anthropic/pdf/SKILL.md`
-- **Source:** https://github.com/anthropics/skills/tree/main/skills/pdf
-- **Pipeline stage:** Stage 1: Ingest / `pdf_extractor` agent / `frc-rulebook-mcp`
-- **Activation:** Load `skills/anthropic/pdf/SKILL.md` when the agent reads or generates a PDF. Provides `pdfplumber`-based extraction, table detection, OCR fallback via `pytesseract`, and PDF report generation via `reportlab`.
-- **Key tools:** `pdfplumber`, `pymupdf`, `pytesseract`, `reportlab`
-
-#### `anthropic/mcp-builder` — MCP Server Development
-- **Local path:** `skills/anthropic/mcp-builder/SKILL.md`
-- **Reference files:** `skills/anthropic/mcp-builder/reference/` (`mcp_best_practices.md`, `python_mcp_server.md`, `node_mcp_server.md`, `evaluation.md`)
-- **Source:** https://github.com/anthropics/skills/tree/main/skills/mcp-builder
-- **Pipeline stage:** All MCP servers in `mcps.md`
-- **Activation:** Load `skills/anthropic/mcp-builder/SKILL.md` + the relevant reference file when implementing any MCP server. Python: load `reference/python_mcp_server.md`. TypeScript: load `reference/node_mcp_server.md`. Always load `reference/mcp_best_practices.md`.
-- **Four-phase workflow:** Research → Implement (FastMCP/TypeScript SDK) → Review & Test (MCP Inspector) → Evaluate (10 Q&A eval pairs)
-- **Recommended stack:** Python + FastMCP or TypeScript + `@modelcontextprotocol/sdk`
-
-#### `anthropic/claude-api` — Claude API & Managed Agents
-- **Local path:** `skills/anthropic/claude-api/SKILL.md`
-- **Source:** https://github.com/anthropics/skills/tree/main/skills/claude-api
-- **Pipeline stage:** Orchestrator + all LLM-calling agents
-- **Activation:** Load when writing any code that calls Claude. Covers tool use, managed agents, prompt caching, streaming, batch, compaction, and model selection.
-- **Default model:** `claude-opus-4-7` with `thinking: {type: "adaptive"}` and streaming for long outputs.
-- **Key patterns:** `managed-agents` for stateful orchestration, prompt caching for large game manuals, tool runner for agent loops.
-
-#### `anthropic/xlsx` — Spreadsheet Creation & Analysis
-- **Local path:** `skills/anthropic/xlsx/SKILL.md`
-- **Source:** https://github.com/anthropics/skills/tree/main/skills/xlsx
-- **Pipeline stage:** `power_engineer` output / `scout_dev` data export
-- **Activation:** Load when generating power budget workbooks or scouting data exports. Use `openpyxl` for formula-bearing workbooks; `pandas` for data exports. Always use Excel formulas (not hardcoded values); run `scripts/recalc.py` after writing.
-- **Key tools:** `openpyxl`, `pandas`
-
-#### `codex/jupyter-notebook` — Reproducible Notebooks
-- **Local path:** `skills/codex/jupyter-notebook/SKILL.md`
-- **Helper script:** `skills/codex/jupyter-notebook/scripts/new_notebook.py`
-- **Source:** https://github.com/openai/skills/tree/main/skills/.curated/jupyter-notebook
-- **Pipeline stage:** `mc_simulator` analysis reports / `mechanic_analyst` exploration
-- **Activation:** Load when creating notebooks for Monte Carlo sweep results, scoring analysis, or game mechanics exploration. Use `experiment` kind for data analysis, `tutorial` kind for strategy walkthroughs. Scaffold with `new_notebook.py`.
-
-#### `karpathy/claude` — LLM Agent Behavioral Guidelines
-- **Local path:** `skills/karpathy/CLAUDE.md`
-- **Source:** https://github.com/forrestchang/andrej-karpathy-skills/blob/main/CLAUDE.md
-- **Pipeline stage:** All agents (foundational)
-- **Activation:** Load for all agents to enforce four core behavioral principles: (1) Think before coding — surface assumptions and tradeoffs; (2) Simplicity First — minimum code, no speculative features; (3) Surgical Changes — touch only what is required; (4) Goal-Driven Execution — define verifiable success criteria before starting multi-step tasks.
-- **Key principles:** No premature abstraction, no silent interpretation of ambiguous requirements, no "improvement" of adjacent code, every change traceable to the user's request.
-
----
-
-### Tier 2 — Sub-Task Skills (load when stage is active)
-
-#### `anthropic/webapp-testing` — Web App Test Automation
-- **Local path:** `skills/anthropic/webapp-testing/SKILL.md`
-- **Helper script:** `skills/anthropic/webapp-testing/scripts/with_server.py`
-- **Source:** https://github.com/anthropics/skills/tree/main/skills/webapp-testing
-- **Pipeline stage:** `scout_dev` QA / power dashboard QA
-- **Activation:** Load when writing Playwright tests for the scouting app or power dashboard. Use `with_server.py` to manage multi-process server lifecycle (FastAPI backend + Streamlit frontend).
-
-#### `anthropic/frontend-design` — UI Component Design
-- **Local path:** `skills/anthropic/frontend-design/SKILL.md`
-- **Source:** https://github.com/anthropics/skills/tree/main/skills/frontend-design
-- **Pipeline stage:** `scout_dev` UI / power dashboard UI
-- **Activation:** Load when building or refining the scouting app UI or power dashboard frontend components.
-
-#### `anthropic/doc-coauthoring` — Document Co-Authoring
-- **Local path:** `skills/anthropic/doc-coauthoring/SKILL.md`
-- **Source:** https://github.com/anthropics/skills/tree/main/skills/doc-coauthoring
-- **Pipeline stage:** `strategy_architect` output (`strategy.md`)
-- **Activation:** Load when generating the strategy document output. Provides structured document drafting with human review checkpoints.
-
-#### `codex/playwright` — Playwright Test Generation
-- **Local path:** `skills/codex/playwright/SKILL.md`
-- **Source:** https://github.com/openai/skills/tree/main/skills/.curated/playwright
-- **Pipeline stage:** Scouting app / dashboard testing (complements `webapp-testing`)
-- **Activation:** Load alongside `anthropic/webapp-testing` for additional Playwright test patterns.
-
-#### `codex/playwright-interactive` — Interactive Playwright Sessions
-- **Local path:** `skills/codex/playwright-interactive/SKILL.md`
-- **Source:** https://github.com/openai/skills/tree/main/skills/.curated/playwright-interactive
-- **Pipeline stage:** Field layout UI validation / live scouting session replay
-- **Activation:** Load when doing interactive browser-based validation of the field visualization or scouting session replay.
-
-#### `codex/security-best-practices` — OWASP Security Review
-- **Local path:** `skills/codex/security-best-practices/SKILL.md`
-- **Source:** https://github.com/openai/skills/tree/main/skills/.curated/security-best-practices
-- **Pipeline stage:** `qa_validator` / MCP server review
-- **Activation:** Load during `qa_validator` gate for scouting app, MCP HTTP endpoints, and PDF ingest pipeline. Covers OWASP Top 10: path injection from untrusted PDF filenames, secret leakage in MCP logs, insecure API key handling.
-
-#### `codex/security-threat-model` — Threat Modeling
-- **Local path:** `skills/codex/security-threat-model/SKILL.md`
-- **Source:** https://github.com/openai/skills/tree/main/skills/.curated/security-threat-model
-- **Pipeline stage:** Architecture / MCP design review
-- **Activation:** Load when designing MCP server boundaries or the scouting data API. Threat surfaces: untrusted PDF input, MCP stdio/HTTP transport, SQLite scouting database.
-
-#### `codex/cli-creator` — Pipeline CLI Scaffolding
-- **Local path:** `skills/codex/cli-creator/SKILL.md`
-- **Source:** https://github.com/openai/skills/tree/main/skills/.curated/cli-creator
-- **Pipeline stage:** Pipeline orchestrator entry point
-- **Activation:** Load when building the one-command pipeline runner (`frc-pipeline run`, `frc-pipeline validate`, etc.). Handles argument parsing, help text, subcommand structure.
-
-#### `codex/gh-fix-ci` — CI Failure Diagnosis
-- **Local path:** `skills/codex/gh-fix-ci/SKILL.md`
-- **Source:** https://github.com/openai/skills/tree/main/skills/.curated/gh-fix-ci
-- **Pipeline stage:** GitHub Actions / CI automation
-- **Activation:** Load when setting up or debugging GitHub Actions workflows for the pipeline automation repo.
-
-#### `codex/yeet` — Artifact Publishing
-- **Local path:** `skills/codex/yeet/SKILL.md`
-- **Source:** https://github.com/openai/skills/tree/main/skills/.curated/yeet
-- **Pipeline stage:** Stage 7: Iterate / artifact release
-- **Activation:** Load when publishing validated artifacts (`manifest.json`, `validation_report.json`, strategy docs) to GitHub releases.
-
-#### `codex/screenshot` — UI Screenshot Capture
-- **Local path:** `skills/codex/screenshot/SKILL.md`
-- **Source:** https://github.com/openai/skills/tree/main/skills/.curated/screenshot
-- **Pipeline stage:** `sim_engineer` / strategy output
-- **Activation:** Load when capturing screenshots of the 2D simulation canvas or field layout for inclusion in strategy documents and validation reports.
-
----
-
-### Skill-to-Agent Activation Map
-
-| Agent | Skills to activate |
-|---|---|
-| `pdf_extractor` | `anthropic/pdf`, `karpathy/claude` |
-| `mechanic_analyst` | `codex/jupyter-notebook`, `karpathy/claude` |
-| `strategy_architect` | `anthropic/doc-coauthoring`, `karpathy/claude` |
-| `robot_codegen` | `anthropic/claude-api`, `karpathy/claude` |
-| `power_engineer` | `anthropic/xlsx`, `karpathy/claude` |
-| `scout_dev` | `anthropic/frontend-design`, `anthropic/webapp-testing`, `codex/playwright`, `karpathy/claude` |
-| `sim_engineer` | `codex/screenshot`, `karpathy/claude` |
-| `mc_simulator` | `codex/jupyter-notebook`, `karpathy/claude` |
-| `advscope_integrator` | `karpathy/claude` |
-| `qa_validator` | `codex/security-best-practices`, `codex/security-threat-model`, `karpathy/claude` |
-| Orchestrator | `anthropic/claude-api`, `anthropic/mcp-builder`, `karpathy/claude` |
-| Pipeline CLI | `codex/cli-creator`, `karpathy/claude` |
-| CI / Release | `codex/gh-fix-ci`, `codex/yeet` |
+- Load `anthropic/pdf` before reading or generating PDFs.
+- Load `anthropic/mcp-builder` only when a local module is mature enough to extract into an MCP.
+- Load `karpathy/claude` as a general implementation discipline layer.
+- No robot-codegen skill is required to reach the core analysis MVP.
