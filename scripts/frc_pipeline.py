@@ -8,11 +8,20 @@ import hashlib
 import json
 import math
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import fitz
+
+# Import decomposition module (available in skills)
+sys.path.insert(0, str(Path(__file__).parent.parent / "skills"))
+try:
+    from anthropic.game_manual_decomposition.decompose import decompose_manual_to_sections
+    HAS_DECOMPOSE = True
+except ImportError:
+    HAS_DECOMPOSE = False
 
 
 GENERATOR_NAME = "frc_pipeline_bootstrap"
@@ -2071,6 +2080,7 @@ def run_pipeline(root: Path, year: str, manual_path: Path, field_drawing_path: P
     raw_text_path = artifacts_dir / "raw" / "manual_text.txt"
     raw_field_text_path = artifacts_dir / "raw" / "field_drawing_text.txt"
     rules_path = artifacts_dir / "rules.json"
+    manual_sections_index_path = artifacts_dir / "manual_sections_index.json"
     field_layout_reference_path = artifacts_dir / "field_layout_reference.json"
     apriltag_layout_path = artifacts_dir / "apriltag_field_layout.json"
     mechanics_path = artifacts_dir / "mechanics.json"
@@ -2086,6 +2096,12 @@ def run_pipeline(root: Path, year: str, manual_path: Path, field_drawing_path: P
     write_raw_text(raw_field_text_path, field_pages)
     rules = build_rules(year, manual_hash, manual_version, pages, root)
     write_json(rules_path, rules)
+    
+    # Build manual sections index for context-efficient agent queries
+    if HAS_DECOMPOSE:
+        manual_sections = decompose_manual_to_sections(pages, year, manual_hash, manual_version)
+        write_json(manual_sections_index_path, manual_sections)
+    
     field_layout_reference = build_field_layout_reference(year, manual_hash, manual_version, field_drawing_hash, field_pages, rules)
     write_json(field_layout_reference_path, field_layout_reference)
     apriltag_layout = build_apriltag_field_layout(year, manual_hash, manual_version, field_drawing_hash, rules)
@@ -2119,6 +2135,7 @@ def run_pipeline(root: Path, year: str, manual_path: Path, field_drawing_path: P
             raw_text_path,
             raw_field_text_path,
             rules_path,
+            manual_sections_index_path,
             field_layout_reference_path,
             apriltag_layout_path,
             mechanics_path,
