@@ -23,6 +23,8 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 import numpy as np
 
@@ -30,6 +32,24 @@ GENERATOR_NAME = "run_agents"
 GENERATOR_VERSION = "0.1.0"
 SCHEMA_VERSION = "0.1.0"
 RANDOM_SEED = 2026
+GRADLE_WRAPPER_VERSION = "8.11"
+GRADLE_WRAPPER_TAG = "v8.11.0"
+
+GRADLE_WRAPPER_ASSET_URLS = {
+    "gradlew": f"https://raw.githubusercontent.com/gradle/gradle/{GRADLE_WRAPPER_TAG}/gradlew",
+    "gradlew.bat": f"https://raw.githubusercontent.com/gradle/gradle/{GRADLE_WRAPPER_TAG}/gradlew.bat",
+    "gradle/wrapper/gradle-wrapper.jar": f"https://raw.githubusercontent.com/gradle/gradle/{GRADLE_WRAPPER_TAG}/gradle/wrapper/gradle-wrapper.jar",
+}
+
+GRADLE_WRAPPER_PROPERTIES = f"""\
+distributionBase=GRADLE_USER_HOME
+distributionPath=permwrapper/dists
+distributionUrl=https\\://services.gradle.org/distributions/gradle-{GRADLE_WRAPPER_VERSION}-bin.zip
+networkTimeout=10000
+validateDistributionUrl=true
+zipStoreBase=GRADLE_USER_HOME
+zipStorePath=permwrapper/dists
+"""
 
 
 # ── shared utilities ──────────────────────────────────────────────────────────
@@ -51,6 +71,34 @@ def write_json(path: Path, data: Any) -> None:
 def write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+def download_bytes(url: str) -> bytes:
+    request = Request(url, headers={"User-Agent": f"{GENERATOR_NAME}/{GENERATOR_VERSION}"})
+    try:
+        with urlopen(request, timeout=30) as response:
+            return response.read()
+    except (HTTPError, URLError, OSError) as exc:
+        raise RuntimeError(f"Could not download Gradle wrapper asset from {url}: {exc}") from exc
+
+def ensure_gradle_wrapper(project_dir: Path) -> list[Path]:
+    wrapper_paths: list[Path] = []
+    properties_path = project_dir / "gradle" / "wrapper" / "gradle-wrapper.properties"
+    write_text(properties_path, GRADLE_WRAPPER_PROPERTIES)
+    wrapper_paths.append(properties_path)
+
+    for relative_path, url in GRADLE_WRAPPER_ASSET_URLS.items():
+        target_path = project_dir / relative_path
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(download_bytes(url))
+        wrapper_paths.append(target_path)
+
+    gradlew_path = project_dir / "gradlew"
+    try:
+        gradlew_path.chmod(gradlew_path.stat().st_mode | 0o111)
+    except OSError:
+        pass
+
+    return wrapper_paths
 
 def base_meta(stage: str, year: str, manual_hash: str, manual_version: str, agent: str, skills: list[str]) -> dict:
     return {
@@ -351,8 +399,8 @@ deploy {
 dependencies {
     implementation wpi.java.deps.wpilib()
     implementation wpi.java.vendor.java()
-    roboRIODebugRuntime wpi.java.deps.wpilibJniDebug(wpi.platforms.roborio)
-    roboRIODebugRuntime wpi.java.vendor.jniDebug(wpi.platforms.roborio)
+    roborioDebug wpi.java.deps.wpilibJniDebug(wpi.platforms.roborio)
+    roborioDebug wpi.java.vendor.jniDebug(wpi.platforms.roborio)
     nativeDebug wpi.java.deps.wpilibJniDebug(wpi.platforms.desktop)
     nativeDebug wpi.java.vendor.jniDebug(wpi.platforms.desktop)
     simulationDebug wpi.java.deps.wpilibJniDebug(wpi.platforms.desktop)
@@ -427,16 +475,24 @@ _VENDORDEP_ADVANTAGEKIT = """\
 {
   "fileName": "AdvantageKit.json",
   "name": "AdvantageKit",
-  "version": "4.1.1",
-  "frcYear": 2026,
-  "uuid": "d820cc26-9c5b-4c32-a7b0-0f4d0a9d2af2",
-  "mavenUrls": ["https://maven.pkg.github.com/Mechanical-Advantage/AdvantageKit"],
+    "version": "26.0.2",
+    "uuid": "d820cc26-74e3-11ec-90d6-0242ac120003",
+    "frcYear": "2026",
+    "mavenUrls": ["https://frcmaven.wpi.edu/artifactory/littletonrobotics-mvn-release/"],
   "jsonUrl": "https://github.com/Mechanical-Advantage/AdvantageKit/releases/latest/download/AdvantageKit.json",
   "javaDependencies": [
-    { "groupId": "org.littletonrobotics.akit", "artifactId": "junction-core", "version": "4.1.1" },
-    { "groupId": "org.littletonrobotics.akit", "artifactId": "junction-wpilib", "version": "4.1.1" }
+        { "groupId": "org.littletonrobotics.akit", "artifactId": "akit-java", "version": "26.0.2" }
   ],
-  "jniDependencies": [],
+    "jniDependencies": [
+        {
+            "groupId": "org.littletonrobotics.akit",
+            "artifactId": "akit-wpilibio",
+            "version": "26.0.2",
+            "skipInvalidPlatforms": false,
+            "isJar": false,
+            "validPlatforms": ["linuxathena", "linuxx86-64", "linuxarm64", "osxuniversal", "windowsx86-64"]
+        }
+    ],
   "cppDependencies": []
 }
 """
@@ -445,16 +501,62 @@ _VENDORDEP_PHOTON = """\
 {
   "fileName": "photonlib.json",
   "name": "photonlib",
-  "version": "v2026.1.1",
-  "frcYear": 2026,
-  "uuid": "515fe07e-bfbb-4354-9ee2-9f9d5b4d9c91",
-  "mavenUrls": ["https://maven.photonvision.org/repository/internal"],
+    "version": "v2026.3.4",
+    "uuid": "515fe07e-bfc6-11fa-b3de-0242ac130004",
+    "frcYear": 2026,
+    "mavenUrls": [
+        "https://maven.photonvision.org/repository/internal",
+        "https://maven.photonvision.org/repository/snapshots"
+    ],
   "jsonUrl": "https://maven.photonvision.org/repository/internal/org/photonvision/photonlib-json/1.0/photonlib-json-1.0.json",
   "javaDependencies": [
-    { "groupId": "org.photonvision", "artifactId": "photonlib-java", "version": "v2026.1.1" }
+        { "groupId": "org.photonvision", "artifactId": "photonlib-java", "version": "v2026.3.4" },
+        { "groupId": "org.photonvision", "artifactId": "photontargeting-java", "version": "v2026.3.4" }
   ],
-  "jniDependencies": [],
-  "cppDependencies": []
+    "jniDependencies": [],
+    "cppDependencies": []
+}
+"""
+
+_VENDORDEP_WPILIB_NEW_COMMANDS = """\
+{
+    "fileName": "WPILibNewCommands.json",
+    "name": "WPILib-New-Commands",
+    "version": "1.0.0",
+    "uuid": "111e20f7-815e-48f8-9dd6-e675ce75b266",
+    "frcYear": "2026",
+    "mavenUrls": [],
+    "jsonUrl": "",
+    "javaDependencies": [
+        {
+            "groupId": "edu.wpi.first.wpilibNewCommands",
+            "artifactId": "wpilibNewCommands-java",
+            "version": "wpilib"
+        }
+    ],
+    "jniDependencies": [],
+    "cppDependencies": [
+        {
+            "groupId": "edu.wpi.first.wpilibNewCommands",
+            "artifactId": "wpilibNewCommands-cpp",
+            "version": "wpilib",
+            "libName": "wpilibNewCommands",
+            "headerClassifier": "headers",
+            "sourcesClassifier": "sources",
+            "sharedLibrary": true,
+            "skipInvalidPlatforms": true,
+            "binaryPlatforms": [
+                "linuxsystemcore",
+                "linuxathena",
+                "linuxarm32",
+                "linuxarm64",
+                "windowsx86-64",
+                "windowsx86",
+                "linuxx86-64",
+                "osxuniversal"
+            ]
+        }
+    ]
 }
 """
 
@@ -508,7 +610,7 @@ public class Robot extends LoggedRobot {
     @Override
     public void autonomousInit() {
         m_autonomousCommand = m_robotContainer.getAutonomousCommand();
-        if (m_autonomousCommand != null) m_autonomousCommand.schedule();
+        if (m_autonomousCommand != null) CommandScheduler.getInstance().schedule(m_autonomousCommand);
     }
 
     @Override
@@ -516,7 +618,7 @@ public class Robot extends LoggedRobot {
 
     @Override
     public void teleopInit() {
-        if (m_autonomousCommand != null) m_autonomousCommand.cancel();
+        if (m_autonomousCommand != null) CommandScheduler.getInstance().cancel(m_autonomousCommand);
     }
 
     @Override
@@ -675,7 +777,7 @@ public final class FieldConstants {
             // Fall through to WPILib bundled layout when deploy artifact is a template or missing.
         }
         try {
-            return AprilTagFieldLayout.loadFromResource(AprilTagFields.k2026Reefscape.m_resourceFile);
+            return AprilTagFieldLayout.loadField(AprilTagFields.kDefaultField);
         } catch (Exception ex) {
             throw new RuntimeException("Unable to load AprilTag field layout.", ex);
         }
@@ -1688,15 +1790,15 @@ repositories {
     maven { url = uri("https://frcmaven.wpi.edu/release") }
     maven { url = uri("https://maven.ctr-electronics.com/release/") }
     maven { url = uri("https://maven.photonvision.org/repository/internal") }
-    maven { url = uri("https://maven.pkg.github.com/Mechanical-Advantage/AdvantageKit") }
+    maven { url = uri("https://frcmaven.wpi.edu/artifactory/littletonrobotics-mvn-release/") }
 }
 
 dependencies {
     implementation wpi.java.deps.wpilib()
     implementation wpi.java.vendor.java()
 
-    roboRIODebugRuntime wpi.java.deps.wpilibJniDebug(wpi.platforms.roborio)
-    roboRIODebugRuntime wpi.java.vendor.jniDebug(wpi.platforms.roborio)
+    roborioDebug wpi.java.deps.wpilibJniDebug(wpi.platforms.roborio)
+    roborioDebug wpi.java.vendor.jniDebug(wpi.platforms.roborio)
     nativeDebug wpi.java.deps.wpilibJniDebug(wpi.platforms.desktop)
     nativeDebug wpi.java.vendor.jniDebug(wpi.platforms.desktop)
     simulationDebug wpi.java.deps.wpilibJniDebug(wpi.platforms.desktop)
@@ -1846,14 +1948,14 @@ public class Robot extends LoggedRobot {
     public void autonomousInit() {
         autonomousCommand = robotContainer.getAutonomousCommand();
         if (autonomousCommand != null) {
-            autonomousCommand.schedule();
+            CommandScheduler.getInstance().schedule(autonomousCommand);
         }
     }
 
     @Override
     public void teleopInit() {
         if (autonomousCommand != null) {
-            autonomousCommand.cancel();
+            CommandScheduler.getInstance().cancel(autonomousCommand);
         }
     }
 
@@ -2670,7 +2772,9 @@ public class VisionIOPhotonVision implements VisionIO {
                     totalTagDistance += target.bestCameraToTarget.getTranslation().getNorm();
                     tagIds.add(target.fiducialId);
                 }
-                tagIds.addAll(multitagResult.fiducialIDsUsed);
+                multitagResult.fiducialIDsUsed.stream()
+                    .map(Short::intValue)
+                    .forEach(tagIds::add);
 
                 poseObservations.add(new PoseObservation(
                     result.getTimestampSeconds(),
@@ -3083,6 +3187,7 @@ def robot_codegen_agent(root: Path, year: str, mechanics: dict) -> dict:
         vdep_dir / "Phoenix6.json":         _VENDORDEP_PHOENIX6,
         vdep_dir / "PathplannerLib.json":   _VENDORDEP_PATHPLANNER,
         vdep_dir / "AdvantageKit.json":     _VENDORDEP_ADVANTAGEKIT,
+        vdep_dir / "WPILibNewCommands.json": _VENDORDEP_WPILIB_NEW_COMMANDS,
         vdep_dir / "photonlib.json":        _VENDORDEP_PHOTON,
         java_root / "Main.java":            _MAIN_JAVA,
         java_root / "Robot.java":           _AK_ROBOT_JAVA,
@@ -3171,7 +3276,9 @@ def robot_codegen_agent(root: Path, year: str, mechanics: dict) -> dict:
     for path, content in files.items():
         write_text(path, content)
 
-    artifact_paths = [f"artifacts/{year}/wpilib_project/{p.relative_to(proj).as_posix()}" for p in files]
+    wrapper_paths = ensure_gradle_wrapper(proj)
+    generated_paths = [*files.keys(), *wrapper_paths]
+    artifact_paths = [f"artifacts/{year}/wpilib_project/{p.relative_to(proj).as_posix()}" for p in generated_paths]
 
     result = {
         "success": True,
@@ -3196,7 +3303,7 @@ def robot_codegen_agent(root: Path, year: str, mechanics: dict) -> dict:
         "subsystems": ["Drive (AdvantageKit-style swerve)", "Vision (PhotonVision pose fusion)", "Intake (IO-layer)", "Scoring (IO-layer)", "Lift (IO-layer)"],
         "vendor_libraries": ["AdvantageKit", "CTRE Phoenix v6", "PathplannerLib", "photonlib"],
     }
-    print(f"  [robot_codegen] done — {len(files)} files written")
+    print(f"  [robot_codegen] done — {len(generated_paths)} files written")
     return result
 
 
