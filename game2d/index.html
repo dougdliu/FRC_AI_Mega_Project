@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>REBUILT 2026 2D Sandbox</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div>
+          <div class="eyebrow">FRC REBUILT 2026</div>
+          <h1>2D 3v3 Strategy Sandbox</h1>
+        </div>
+        <div class="toolbar">
+          <button id="startPauseButton" class="primary">Start</button>
+          <button id="stepButton">Step 1s</button>
+          <button id="resetButton">Reset</button>
+          <label>
+            Speed
+            <select id="speedSelect">
+              <option value="1">1x</option>
+              <option value="2">2x</option>
+              <option value="4">4x</option>
+              <option value="8">8x</option>
+            </select>
+          </label>
+          <label>
+            Blue preset
+            <select id="bluePresetSelect"></select>
+          </label>
+          <label>
+            Red preset
+            <select id="redPresetSelect"></select>
+          </label>
+        </div>
+      </header>
+
+      <main class="layout">
+        <aside class="sidebar left">
+          <section class="panel">
+            <h2>Match HUD</h2>
+            <div id="matchHud" class="hud-grid"></div>
+          </section>
+
+          <section class="panel">
+            <h2>Selected Robot</h2>
+            <div id="selectedRobot"></div>
+            <div id="selectedRobotCommands" class="command-grid"></div>
+          </section>
+
+          <section class="panel">
+            <h2>Controls</h2>
+            <ul class="help-list">
+              <li><code>Space</code> start or pause</li>
+              <li><code>R</code> reset match</li>
+              <li><code>1-6</code> select robot</li>
+              <li><code>Q</code>, <code>W</code>, <code>E</code>, <code>D</code> change command mode</li>
+              <li><code>Z</code>, <code>X</code>, <code>C</code> climb level 1, 2, 3</li>
+              <li>click field to set the selected human robot target</li>
+            </ul>
+          </section>
+        </aside>
+
+        <section class="arena-panel panel">
+          <canvas id="arenaCanvas" width="1280" height="700"></canvas>
+        </section>
+
+        <aside class="sidebar right">
+          <section class="panel">
+            <h2>Blue Alliance</h2>
+            <div id="blueRoster" class="roster"></div>
+          </section>
+
+          <section class="panel">
+            <h2>Red Alliance</h2>
+            <div id="redRoster" class="roster"></div>
+          </section>
+
+          <section class="panel event-panel">
+            <h2>Event Log</h2>
+            <div id="eventLog" class="event-log"></div>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <script type="module" src="./src/app.js"></script>
+  </body>
+  </html>

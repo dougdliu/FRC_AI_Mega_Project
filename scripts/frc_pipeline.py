@@ -7,7 +7,9 @@ import argparse
 import hashlib
 import json
 import math
+import random
 import re
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,8 +32,10 @@ SCHEMA_VERSION = "0.1.0"
 
 AGENT_SKILLS = {
     "pdf_extractor": ["anthropic/pdf", "karpathy/claude"],
+    "field_modeler": ["codex/jupyter-notebook", "karpathy/claude"],
     "mechanic_analyst": ["codex/jupyter-notebook", "karpathy/claude"],
     "strategy_architect": ["anthropic/doc-coauthoring", "karpathy/claude"],
+    "sim_engineer": ["codex/jupyter-notebook", "karpathy/claude"],
     "robot_codegen": ["anthropic/claude-api", "karpathy/claude"],
     "qa_validator": ["codex/security-best-practices", "codex/security-threat-model", "karpathy/claude"],
 }
@@ -54,6 +58,42 @@ SIM_FEEDBACK_KPI_BOUNDS = {
     "alliance_dependency_score": (0.0, 1.0),
 }
 SIM_FEEDBACK_UPDATE_DELTA_BOUNDS = (-100.0, 100.0)
+
+CURRENT_GENERATED_ARTIFACTS = {
+    "apriltag_field_layout.json",
+    "extraction_report.md",
+    "field_layout_reference.json",
+    "field_model.json",
+    "logs",
+    "manifest.json",
+    "manual_sections_index.json",
+    "mechanics.json",
+    "orchestration_state.json",
+    "raw",
+    "run_history.json",
+    "rules.json",
+    "sim_params.json",
+    "sim_summary.json",
+    "simulation_model.json",
+    "simulation_report.md",
+    "strategy_brief.md",
+    "strategy_packet.json",
+    "team_decision_packet.md",
+    "validation",
+    "validation_report.json",
+}
+
+LEGACY_GENERATED_ARTIFACTS = {
+    "manual_insight_analysis.md",
+    "manual_insight_packet.json",
+    "mc_results",
+    "power_app",
+    "scouting_app",
+    "sim_2d",
+    "sim_arch_feedback.json",
+    "strategy_hypotheses.md",
+    "wpilib_project",
+}
 
 
 def utc_now() -> str:
@@ -94,6 +134,59 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=2, ensure_ascii=False)
         handle.write("\n")
+
+
+def remove_path(path: Path) -> None:
+    if not path.exists():
+        return
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def collect_manifest_artifact_paths(root: Path, manifest_path: Path, year: str) -> set[Path]:
+    if not manifest_path.exists():
+        return set()
+    try:
+        with manifest_path.open("r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except (json.JSONDecodeError, OSError):
+        return set()
+    if not isinstance(manifest, dict):
+        return set()
+    artifacts = manifest.get("artifacts", [])
+    if not isinstance(artifacts, list):
+        return set()
+
+    resolved: set[Path] = set()
+    year_prefix = f"artifacts/{year}/"
+    for item in artifacts:
+        if not isinstance(item, dict):
+            continue
+        rel = item.get("path")
+        if not isinstance(rel, str):
+            continue
+        normalized = rel.replace("\\", "/")
+        if normalized.startswith(year_prefix):
+            resolved.add(root / Path(normalized))
+    return resolved
+
+
+def reset_artifact_output(root: Path, year: str) -> None:
+    artifacts_dir = root / "artifacts" / year
+    manifest_path = artifacts_dir / "manifest.json"
+    cleanup_targets: set[Path] = set()
+
+    for name in CURRENT_GENERATED_ARTIFACTS.union(LEGACY_GENERATED_ARTIFACTS):
+        cleanup_targets.add(artifacts_dir / name)
+
+    cleanup_targets.update(collect_manifest_artifact_paths(root, manifest_path, year))
+
+    for path in sorted(cleanup_targets, key=lambda item: (len(item.parts), str(item)), reverse=True):
+        if path == artifacts_dir:
+            continue
+        remove_path(path)
 
 
 def compact(text: str, limit: int = 700) -> str:
@@ -247,13 +340,21 @@ def base_metadata(stage: str, year: str, manual_hash: str, manual_version: str, 
         "stage": stage,
         "agent": {
             "name": agent_name,
-            "skills": AGENT_SKILLS[agent_name],
+            "skills": AGENT_SKILLS.get(agent_name, []),
         },
     }
 
 
 def build_rules(year: str, manual_hash: str, manual_version: str, pages: list[dict[str, Any]], root: Path) -> dict[str, Any]:
     clauses = extract_rule_clauses(pages)
+    zone_citation = citation(pages, 21, "ALLIANCE AREA")
+    hub_citation = citation(pages, 22, "A HUB is one of two")
+    hub_opening_citation = citation(pages, 23, "The top of each HUB has")
+    apriltag_citation = citation(pages, 33, "AprilTags are 8.125in")
+    apriltag_hub_citation = citation(pages, 34, "HUB AprilTags")
+    apriltag_tower_citation = citation(pages, 34, "Two AprilTags")
+    apriltag_outpost_citation = citation(pages, 35, "Two AprilTags")
+    apriltag_trench_citation = citation(pages, 35, "TRENCH AprilTags")
     key_citations = [
         citation(pages, 15, "two competing alliances"),
         citation(pages, 18, "approximately 317.7in"),
@@ -428,6 +529,55 @@ def build_rules(year: str, manual_hash: str, manual_version: str, pages: list[di
                 "length_m": 16.54,
                 "citations": [citation(pages, 18, "approximately 317.7in")],
             },
+            "zones": [
+                {
+                    "name": "ALLIANCE AREA",
+                    "dimensions_in": {"width": 360.0, "depth": 134.0},
+                    "dimensions_m": {"width": 9.14, "depth": 3.4},
+                    "description": "Driver and human-player volume outside the carpeted field edge.",
+                    "citations": [zone_citation],
+                },
+                {
+                    "name": "ALLIANCE ZONE",
+                    "dimensions_in": {"width": 317.7, "depth": 158.6},
+                    "dimensions_m": {"width": 8.07, "depth": 4.03},
+                    "description": "Alliance-side scoring half containing the TOWER and DEPOT.",
+                    "citations": [zone_citation],
+                },
+                {
+                    "name": "NEUTRAL ZONE",
+                    "dimensions_in": {"width": 317.7, "depth": 283.0},
+                    "dimensions_m": {"width": 8.07, "depth": 7.19},
+                    "description": "Midfield collection zone formed by the BUMPS, TRENCHES, HUBS, and guardrails.",
+                    "citations": [zone_citation],
+                },
+                {
+                    "name": "OUTPOST AREA",
+                    "dimensions_in": {"width": 71.0, "depth": 134.0},
+                    "dimensions_m": {"width": 1.8, "depth": 3.4},
+                    "description": "Human-player chute and corral area outside the carpet edge.",
+                    "citations": [zone_citation],
+                },
+            ],
+            "markings": [
+                {
+                    "name": "CENTER LINE",
+                    "description": "White line that bisects the NEUTRAL ZONE.",
+                    "citations": [zone_citation],
+                },
+                {
+                    "name": "HUMAN STARTING LINE",
+                    "offset_in": 24.0,
+                    "offset_m": 0.61,
+                    "description": "White line in the ALLIANCE AREA parallel to the ALLIANCE WALL.",
+                    "citations": [zone_citation],
+                },
+                {
+                    "name": "ROBOT STARTING LINE",
+                    "description": "Alliance-colored line at the ALLIANCE ZONE edge in front of two BUMPS and an ALLIANCE HUB.",
+                    "citations": [zone_citation],
+                },
+            ],
             "elements": [
                 {"name": "OUTPOST", "count_per_field": 2, "count_per_alliance": 1},
                 {"name": "HUB", "count_per_field": 2, "count_per_alliance": 1},
@@ -444,6 +594,77 @@ def build_rules(year: str, manual_hash: str, manual_version: str, pages: list[di
                 "weight_kg_range": [0.203, 0.227],
                 "control_limit": "unlimited after the start of the MATCH",
                 "citations": [citation(pages, 32, "A FUEL is a 5.91in")],
+            },
+            "hub": {
+                "footprint_in": {"width": 47.0, "depth": 47.0},
+                "footprint_m": {"width": 1.19, "depth": 1.19},
+                "alliance_wall_offset_in": 158.6,
+                "alliance_wall_offset_m": 4.03,
+                "opening_hex_width_in": 41.7,
+                "opening_hex_width_m": 1.06,
+                "opening_front_edge_height_in": 72.0,
+                "opening_front_edge_height_m": 1.83,
+                "neutral_zone_exits": 4,
+                "citations": [hub_citation, hub_opening_citation],
+            },
+        },
+        "field_rules": {
+            "zones": [
+                {
+                    "name": "ALLIANCE AREA",
+                    "rule": "Driver and human-player staging area outside the carpet edge.",
+                    "citations": [zone_citation],
+                },
+                {
+                    "name": "ALLIANCE ZONE",
+                    "rule": "Alliance-side field volume that surrounds one TOWER and one DEPOT and includes the ROBOT STARTING LINE.",
+                    "citations": [zone_citation],
+                },
+                {
+                    "name": "NEUTRAL ZONE",
+                    "rule": "Central midfield volume surrounding the CENTER LINE and bounded by BUMPS, TRENCHES, HUBS, and guardrails.",
+                    "citations": [zone_citation],
+                },
+                {
+                    "name": "OUTPOST AREA",
+                    "rule": "Human-player loading area bounded by the OUTPOST, edge of carpet, and tape.",
+                    "citations": [zone_citation],
+                },
+            ],
+            "scoring_structures": [
+                {
+                    "name": "HUB",
+                    "rule": "Each ALLIANCE has one HUB centered between two BUMPS and offset 158.6 in from its ALLIANCE WALL.",
+                    "citations": [hub_citation],
+                },
+                {
+                    "name": "HUB OPENING",
+                    "rule": "ROBOTS deliver FUEL through a 41.7 in hexagonal opening whose front edge is 72 in above the carpet.",
+                    "citations": [hub_opening_citation],
+                },
+            ],
+            "apriltags": {
+                "family": "36h11",
+                "count": 32,
+                "mount_panel_in": 10.5,
+                "tag_size_in": 8.125,
+                "hub_ids": [2, 3, 4, 5, 8, 9, 10, 11, 18, 19, 20, 21, 24, 25, 26, 27],
+                "tower_ids": [15, 16, 31, 32],
+                "outpost_ids": [13, 14, 29, 30],
+                "trench_ids": [1, 6, 7, 12, 17, 22, 23, 28],
+                "mount_heights_m": {
+                    "hub": 1.124,
+                    "tower": 0.5525,
+                    "outpost": 0.5525,
+                    "trench": 0.889,
+                },
+                "citations": [
+                    apriltag_citation,
+                    apriltag_hub_citation,
+                    apriltag_tower_citation,
+                    apriltag_outpost_citation,
+                    apriltag_trench_citation,
+                ],
             },
         },
         "timing": {
@@ -512,46 +733,73 @@ def build_field_layout_reference(
     dims = rules.get("field", {}).get("dimensions", {})
     field_length = float(dims.get("length_m", 0.0) or 0.0)
     field_width = float(dims.get("width_m", 0.0) or 0.0)
+    drawing_origin_page = next((page for page in field_pages if "AprilTag Coordinates" in page.get("text", "")), None)
+    drawing_origin_note = compact(drawing_origin_page["text"], 420) if drawing_origin_page else ""
     return {
         "success": True,
-        "artifact_paths": [
-            f"artifacts/{year}/field_layout_reference.json",
-            f"artifacts/{year}/apriltag_field_layout.json",
-        ],
+        "artifact_paths": [f"artifacts/{year}/field_layout_reference.json"],
         "warnings": [
-            "Field drawing dimensions are extracted as reference tokens for sim/codegen/cycle-time analysis; a human audit is still required before final geometry release.",
-            "AprilTag layout JSON is emitted as a pipeline artifact and should be populated from the field drawing before final robot deployment.",
+            "Field drawing OCR is used as a traceable reference layer; unresolved geometry should stay explicit until a human audit confirms coordinates.",
+            "AprilTag IDs and mounting groups are known from the manual, but most absolute poses still need manual trace-off from the field drawings.",
         ],
         "metadata": metadata,
-        "page_count": len(field_pages),
+        "drawing_pages": [
+            {
+                "page": page["page"],
+                "section_id": page["section_id"],
+                "title": page["title"],
+                "text_excerpt": compact(page["text"], 280),
+            }
+            for page in field_pages
+            if page.get("text")
+        ],
         "field": {
             "length": field_length,
             "width": field_width,
         },
-        "alliance_sides": {
-            "blue": {
-                "origin": {"x": 0.0, "y": 0.0},
-                "driver_station_midpoint": {"x": 0.0, "y": field_width / 2.0},
-                "alliance_wall_normal": {"x": 1.0, "y": 0.0},
-            },
-            "red": {
-                "origin": {"x": field_length, "y": field_width},
-                "driver_station_midpoint": {"x": field_length, "y": field_width / 2.0},
-                "alliance_wall_normal": {"x": -1.0, "y": 0.0},
-            },
-            "coordinate_note": "WPILib field coordinates are blue-alliance-relative; red-side reference points are mirrored across the field center.",
-        },
         "dimension_tokens": extract_dimension_tokens(field_pages),
-        "intended_consumers": [
-            "mechanic_analyst",
-            "sim_engineer",
-            "mc_simulator",
-            "robot_codegen",
+        "raw_locations": [
+            {
+                "name": "field_carpet",
+                "kind": "boundary",
+                "dimensions_m": {"length": field_length, "width": field_width},
+                "sources": [rules["field"]["dimensions"]["citations"][0]],
+            },
+            {
+                "name": "blue_hub_reference",
+                "kind": "scoring_location",
+                "x_from_blue_wall_m": 4.03,
+                "y_assumption_m": round(field_width / 2.0, 3),
+                "coordinate_confidence": "medium",
+                "notes": "The manual fixes HUB offset from the alliance wall. Y is modeled at field midpoint for coarse analysis until drawing trace-off is added.",
+                "sources": rules["field"]["hub"]["citations"],
+            },
+            {
+                "name": "red_hub_reference",
+                "kind": "scoring_location",
+                "x_from_blue_origin_m": round(field_length - 4.03, 3),
+                "y_assumption_m": round(field_width / 2.0, 3),
+                "coordinate_confidence": "medium",
+                "notes": "Mirrored from the blue-side HUB reference for coarse analysis.",
+                "sources": rules["field"]["hub"]["citations"],
+            },
+            {
+                "name": "zone_dimensions",
+                "kind": "zones",
+                "zones": rules["field"]["zones"],
+                "sources": [rules["field"]["zones"][0]["citations"][0]],
+            },
+            {
+                "name": "apriltag_coordinate_frame",
+                "kind": "reference_frame",
+                "notes": drawing_origin_note,
+                "sources": [{"section_id": drawing_origin_page["section_id"], "page": drawing_origin_page["page"], "clause_text": drawing_origin_note}] if drawing_origin_page else [],
+            },
         ],
-        "use_cases": [
-            "2D field geometry reference",
-            "AprilTagFieldLayout JSON generation",
-            "cycle-time distance and path-length analysis",
+        "confidence_notes": [
+            "Absolute AprilTag coordinates were not reliably OCR-extracted from the field drawing pages and remain unresolved.",
+            "HUB X offsets are grounded in the manual. HUB Y placement is assumed to be the field midline for coarse strategy simulation only.",
+            "Zone dimensions are treated as cited geometric references even though the zone-depth totals do not tile the full carpet dimensions directly.",
         ],
     }
 
@@ -565,15 +813,226 @@ def build_apriltag_field_layout(
 ) -> dict[str, Any]:
     dims = rules.get("field", {}).get("dimensions", {})
     return {
-        "tags": [],
+        "metadata": {
+            "schema_version": SCHEMA_VERSION,
+            "game_year": year,
+            "manual_version": manual_version,
+            "generated_at": utc_now(),
+            "source_manual_hash": manual_hash,
+            "source_field_drawing_hash": field_drawing_hash,
+            "generator_name": GENERATOR_NAME,
+            "generator_version": GENERATOR_VERSION,
+            "stage": "model",
+            "agent": {"name": "field_modeler", "skills": AGENT_SKILLS.get("field_modeler", [])},
+            "notes": [
+                "Absolute tag poses still need manual trace-off from the field drawings.",
+                "Tag IDs and mount groups are preserved here so downstream tooling can fill in poses deterministically later.",
+            ],
+        },
         "field": {
             "length": round(float(dims.get("length_m", 0.0) or 0.0), 3),
             "width": round(float(dims.get("width_m", 0.0) or 0.0), 3),
         },
+        "tags": [],
+        "known_mount_groups": {
+            "hub": rules.get("field_rules", {}).get("apriltags", {}).get("hub_ids", []),
+            "tower": rules.get("field_rules", {}).get("apriltags", {}).get("tower_ids", []),
+            "outpost": rules.get("field_rules", {}).get("apriltags", {}).get("outpost_ids", []),
+            "trench": rules.get("field_rules", {}).get("apriltags", {}).get("trench_ids", []),
+        },
     }
 
 
-def build_mechanics(year: str, rules: dict[str, Any]) -> dict[str, Any]:
+def build_field_model(
+    year: str,
+    rules: dict[str, Any],
+    field_layout_reference: dict[str, Any],
+) -> dict[str, Any]:
+    metadata = base_metadata(
+        "model",
+        year,
+        rules["metadata"]["source_manual_hash"],
+        rules["metadata"]["manual_version"],
+        "field_modeler",
+    )
+    metadata["source_field_drawing_hash"] = field_layout_reference["metadata"]["source_field_drawing_hash"]
+    dims = rules["field"]["dimensions"]
+    field_length = float(dims["length_m"])
+    field_width = float(dims["width_m"])
+    hub_x = float(rules["field"]["hub"]["alliance_wall_offset_m"])
+    blue_hub = {"x_m": round(hub_x, 3), "y_m": round(field_width / 2.0, 3), "z_m": 0.0}
+    red_hub = {"x_m": round(field_length - hub_x, 3), "y_m": round(field_width / 2.0, 3), "z_m": 0.0}
+    return {
+        "success": True,
+        "artifact_paths": [
+            f"artifacts/{year}/field_model.json",
+            f"artifacts/{year}/apriltag_field_layout.json",
+        ],
+        "warnings": [
+            "This field model is normalized for strategy and coarse simulation, not a final robot-autonomy map.",
+            "HUB Y coordinates and coarse travel distances are symmetry-based assumptions until the field drawings are manually traced.",
+        ],
+        "metadata": metadata,
+        "field_dimensions": {
+            "length_m": field_length,
+            "width_m": field_width,
+            "citations": dims["citations"],
+        },
+        "reference_frames": {
+            "wpilib_blue_origin": {
+                "origin": {"x_m": 0.0, "y_m": 0.0, "z_m": 0.0},
+                "x_axis": "toward_red_alliance_wall",
+                "y_axis": "away_from_scoring_table",
+                "z_axis": "up",
+            },
+            "field_drawing_origin": {
+                "origin_note": "Field drawing origin aligns to the blue-alliance / scoring-table corner reference described in the drawing text.",
+                "source": next(
+                    (
+                        location["sources"][0]
+                        for location in field_layout_reference.get("raw_locations", [])
+                        if location.get("name") == "apriltag_coordinate_frame" and location.get("sources")
+                    ),
+                    None,
+                ),
+            },
+            "alliance_mirroring": {
+                "blue_to_red": {
+                    "mirror_plane_x_m": round(field_length / 2.0, 3),
+                    "description": "Red-alliance reference points are mirrored from blue-alliance coordinates across midfield.",
+                }
+            },
+        },
+        "zones": [
+            {
+                "name": "blue_alliance_zone",
+                "alliance": "blue",
+                "dimensions_m": rules["field"]["zones"][1]["dimensions_m"],
+                "position_reference": "adjacent to blue alliance wall",
+                "coordinate_confidence": "medium",
+                "citations": rules["field"]["zones"][1]["citations"],
+            },
+            {
+                "name": "neutral_zone",
+                "alliance": None,
+                "dimensions_m": rules["field"]["zones"][2]["dimensions_m"],
+                "position_reference": "centered on midfield",
+                "coordinate_confidence": "medium",
+                "citations": rules["field"]["zones"][2]["citations"],
+            },
+            {
+                "name": "red_alliance_zone",
+                "alliance": "red",
+                "dimensions_m": rules["field"]["zones"][1]["dimensions_m"],
+                "position_reference": "adjacent to red alliance wall",
+                "coordinate_confidence": "medium",
+                "citations": rules["field"]["zones"][1]["citations"],
+            },
+            {
+                "name": "outpost_area",
+                "alliance": "both",
+                "dimensions_m": rules["field"]["zones"][3]["dimensions_m"],
+                "position_reference": "outside the carpet boundary near each alliance wall",
+                "coordinate_confidence": "high",
+                "citations": rules["field"]["zones"][3]["citations"],
+            },
+        ],
+        "scoring_locations": [
+            {
+                "name": "blue_hub",
+                "alliance": "blue",
+                "kind": "hub",
+                "pose": blue_hub,
+                "opening_height_m": rules["field"]["hub"]["opening_front_edge_height_m"],
+                "coordinate_confidence": "medium",
+                "notes": "X offset is cited; Y is centered for coarse modeling.",
+                "citations": rules["field"]["hub"]["citations"],
+            },
+            {
+                "name": "red_hub",
+                "alliance": "red",
+                "kind": "hub",
+                "pose": red_hub,
+                "opening_height_m": rules["field"]["hub"]["opening_front_edge_height_m"],
+                "coordinate_confidence": "medium",
+                "notes": "Mirrored from the blue HUB reference for coarse modeling.",
+                "citations": rules["field"]["hub"]["citations"],
+            },
+            {
+                "name": "blue_tower",
+                "alliance": "blue",
+                "kind": "tower",
+                "pose": {"x_m": 0.0, "y_m": round(field_width / 2.0, 3), "z_m": 0.0},
+                "coordinate_confidence": "low",
+                "notes": "Modeled at the alliance wall midpoint until tower-wall drawing traces are added.",
+                "citations": rules["ranking_points"][2]["citations"],
+            },
+            {
+                "name": "red_tower",
+                "alliance": "red",
+                "kind": "tower",
+                "pose": {"x_m": round(field_length, 3), "y_m": round(field_width / 2.0, 3), "z_m": 0.0},
+                "coordinate_confidence": "low",
+                "notes": "Modeled at the alliance wall midpoint until tower-wall drawing traces are added.",
+                "citations": rules["ranking_points"][2]["citations"],
+            },
+        ],
+        "game_piece_locations": [
+            {
+                "name": "depots",
+                "count": 2,
+                "per_alliance": 1,
+                "starting_fuel_per_location": 24,
+                "notes": "Alliance-side fixed FUEL staging.",
+                "citations": rules["match_setup"]["citations"],
+            },
+            {
+                "name": "outpost_chutes",
+                "count": 2,
+                "per_alliance": 1,
+                "starting_fuel_per_location": 24,
+                "notes": "Human-player feed locations in the OUTPOST AREA.",
+                "citations": rules["match_setup"]["citations"],
+            },
+            {
+                "name": "neutral_zone_staging",
+                "count_range": rules["match_setup"]["neutral_zone_fuel_range"],
+                "notes": "Remaining FUEL are dispersed in the NEUTRAL ZONE with intentional variance.",
+                "citations": rules["match_setup"]["citations"],
+            },
+        ],
+        "obstacles": [
+            {
+                "name": "bumps",
+                "count": 4,
+                "notes": "Physical barriers that constrain midfield travel and line up with the HUB references.",
+                "citations": rules["field"]["dimensions"]["citations"],
+            },
+            {
+                "name": "trenches",
+                "count": 4,
+                "notes": "Lane-like field structures that also host AprilTags and influence collection paths.",
+                "citations": rules["field_rules"]["apriltags"]["citations"],
+            },
+            {
+                "name": "hubs",
+                "count": 2,
+                "footprint_m": rules["field"]["hub"]["footprint_m"],
+                "notes": "Central scoring structures with four exits into the NEUTRAL ZONE.",
+                "citations": rules["field"]["hub"]["citations"],
+            },
+        ],
+        "coarse_paths": {
+            "blue_start_to_blue_hub_m": round(hub_x, 3),
+            "blue_hub_to_midfield_collection_m": round(max(field_length / 2.0 - hub_x, 0.0), 3),
+            "blue_midfield_collection_to_blue_hub_m": round(max(field_length / 2.0 - hub_x, 0.0), 3),
+            "blue_hub_to_blue_tower_m": round(hub_x, 3),
+            "notes": "Coarse distances are 1D approximations for strategy and sensitivity sweeps, not collision-free autonomous paths.",
+        },
+    }
+
+
+def build_mechanics(year: str, rules: dict[str, Any], field_model: dict[str, Any] | None = None) -> dict[str, Any]:
     metadata = base_metadata(
         "model",
         year,
@@ -652,6 +1111,27 @@ def build_mechanics(year: str, rules: dict[str, Any]) -> dict[str, Any]:
             {"resource": "fuel_control", "limit": "unlimited_after_match_start", "scope": "robot", "citations": rules["field"]["scoring_element"]["citations"]},
             {"resource": "robot_tower_score", "limit": "one_teleop_level_per_robot", "scope": "robot", "citations": rules["scoring"][4]["citations"]},
         ],
+        "phase_limits": {
+            "auto_s": rules["timing"]["auto_s"],
+            "teleop_s": rules["timing"]["teleop_s"],
+            "transition_shift_s": rules["timing"]["transition_shift_s"],
+            "alliance_shift_count": rules["timing"]["alliance_shift_count"],
+            "alliance_shift_s": rules["timing"]["alliance_shift_s"],
+            "endgame_s": rules["timing"]["endgame_s"],
+            "fuel_scoring_grace_s": rules["timing"]["fuel_scoring_grace_s"],
+            "citations": rules["timing"]["citations"],
+        },
+        "scoring_model": rules["scoring"],
+        "penalty_model": [
+            {
+                "rule_id": penalty["rule_id"],
+                "type": penalty["type"],
+                "points": penalty["points"],
+                "awarded_to": penalty["awarded_to"],
+                "citations": penalty["citations"],
+            }
+            for penalty in rules["penalties"]
+        ],
         "win_conditions": [
             {"condition": "higher_match_points_than_opponent", "reward": "win", "ranking_points": 3, "tiebreaker_order": [], "citations": rules["ranking_points"][3]["citations"]},
             {"condition": "equal_match_points_to_opponent", "reward": "tie", "ranking_points": 1, "tiebreaker_order": [], "citations": rules["ranking_points"][4]["citations"]},
@@ -660,8 +1140,8 @@ def build_mechanics(year: str, rules: dict[str, Any]) -> dict[str, Any]:
             {"condition": "tower_points >= 50", "reward": "TRAVERSAL RP", "ranking_points": 1, "citations": rules["ranking_points"][2]["citations"]},
         ],
         "physics": {
-            "field_width_m": rules["field"]["dimensions"]["width_m"],
-            "field_length_m": rules["field"]["dimensions"]["length_m"],
+            "field_width_m": (field_model or {}).get("field_dimensions", {}).get("width_m", rules["field"]["dimensions"]["width_m"]),
+            "field_length_m": (field_model or {}).get("field_dimensions", {}).get("length_m", rules["field"]["dimensions"]["length_m"]),
             "fuel_diameter_m": 0.150,
             "robot_starting_perimeter_m": 2.794,
             "robot_max_height_m": 0.762,
@@ -1877,6 +2357,930 @@ def build_insight_analysis_md(
     return "\n".join(L)
 
 
+def build_extraction_report_md(
+    rules: dict[str, Any],
+    field_layout_reference: dict[str, Any],
+    manual_sections_index_present: bool,
+) -> str:
+    lines = [
+        "# Extraction Report",
+        "",
+        f"Generated: {rules['metadata']['generated_at']}",
+        f"Manual version: {rules['metadata']['manual_version']}",
+        "",
+        "## Coverage",
+        f"- Extracted sections: {len(rules.get('sections', []))}",
+        f"- Parsed rule clauses: {len(rules.get('clauses', []))}",
+        f"- Scoring actions: {len(rules.get('scoring', []))}",
+        f"- Penalty definitions: {len(rules.get('penalties', []))}",
+        f"- Field drawing pages with OCR text: {len(field_layout_reference.get('drawing_pages', []))}",
+        f"- Dimension tokens captured from field drawing: {len(field_layout_reference.get('dimension_tokens', []))}",
+        f"- Manual sections index generated: {'yes' if manual_sections_index_present else 'no'}",
+        "",
+        "## Key Extracted Facts",
+        f"- Field dimensions: {rules['field']['dimensions']['length_m']} m x {rules['field']['dimensions']['width_m']} m",
+        f"- HUB footprint: {rules['field']['hub']['footprint_m']['width']} m x {rules['field']['hub']['footprint_m']['depth']} m",
+        f"- HUB alliance-wall offset: {rules['field']['hub']['alliance_wall_offset_m']} m",
+        f"- Match timing: {rules['timing']['auto_s']} s auto, {rules['timing']['teleop_s']} s teleop, {rules['timing']['endgame_s']} s endgame",
+        f"- Match setup fuel count: {rules['match_setup']['total_fuel']}",
+        "",
+        "## Remaining Ambiguities",
+    ]
+    for note in field_layout_reference.get("confidence_notes", []):
+        lines.append(f"- {note}")
+    lines.extend(
+        [
+            "",
+            "## Release Notes",
+        ]
+    )
+    for warning in rules.get("warnings", []):
+        lines.append(f"- {warning}")
+    return "\n".join(lines).strip() + "\n"
+
+
+def build_capability_profiles() -> dict[str, dict[str, Any]]:
+    return {
+        "fuel_sprinter": {
+            "label": "Fuel Sprinter",
+            "description": "High-throughput active-HUB scorer with shallow endgame capability.",
+            "cycle_time_s": [2.8, 3.6],
+            "auto_fuel_scored": [8.0, 12.0],
+            "teleop_accuracy": [0.86, 0.93],
+            "teleop_climb_options": [
+                {"level": 0, "weight": 0.35},
+                {"level": 1, "weight": 0.65},
+            ],
+            "auto_l1_probability": 0.15,
+            "climb_success_base": 0.78,
+            "defense_pressure": 0.2,
+        },
+        "balanced_climber": {
+            "label": "Balanced Climber",
+            "description": "Generalist alliance piece that still contributes meaningful tower points.",
+            "cycle_time_s": [3.6, 4.6],
+            "auto_fuel_scored": [5.0, 8.0],
+            "teleop_accuracy": [0.8, 0.88],
+            "teleop_climb_options": [
+                {"level": 1, "weight": 0.2},
+                {"level": 2, "weight": 0.8},
+            ],
+            "auto_l1_probability": 0.25,
+            "climb_success_base": 0.85,
+            "defense_pressure": 0.35,
+        },
+        "tower_anchor": {
+            "label": "Tower Anchor",
+            "description": "Low-throughput but high-certainty endgame robot built to stabilize TRAVERSAL RP paths.",
+            "cycle_time_s": [5.0, 6.2],
+            "auto_fuel_scored": [3.0, 5.0],
+            "teleop_accuracy": [0.74, 0.84],
+            "teleop_climb_options": [
+                {"level": 2, "weight": 0.25},
+                {"level": 3, "weight": 0.75},
+            ],
+            "auto_l1_probability": 0.3,
+            "climb_success_base": 0.9,
+            "defense_pressure": 0.25,
+        },
+        "support_disruptor": {
+            "label": "Support Disruptor",
+            "description": "Utility robot that gives up raw throughput for lane pressure and reduced opponent efficiency.",
+            "cycle_time_s": [5.4, 7.0],
+            "auto_fuel_scored": [2.0, 4.0],
+            "teleop_accuracy": [0.7, 0.82],
+            "teleop_climb_options": [
+                {"level": 0, "weight": 0.25},
+                {"level": 1, "weight": 0.55},
+                {"level": 2, "weight": 0.2},
+            ],
+            "auto_l1_probability": 0.1,
+            "climb_success_base": 0.75,
+            "defense_pressure": 0.65,
+        },
+    }
+
+
+def build_strategy_packet(
+    year: str,
+    rules: dict[str, Any],
+    field_model: dict[str, Any],
+    mechanics: dict[str, Any],
+    insight_packet: dict[str, Any],
+) -> dict[str, Any]:
+    metadata = base_metadata(
+        "plan",
+        year,
+        rules["metadata"]["source_manual_hash"],
+        rules["metadata"]["manual_version"],
+        "strategy_architect",
+    )
+    metadata["source_field_drawing_hash"] = field_model["metadata"]["source_field_drawing_hash"]
+    profiles = build_capability_profiles()
+    coarse_paths = field_model.get("coarse_paths", {})
+    candidates = insight_packet.get("strategy_candidates", [])
+    scenario_by_name = {
+        "Safe RP Foundation": {
+            "profile_mix": ["balanced_climber", "balanced_climber", "tower_anchor"],
+            "modifiers": {
+                "cycle_multiplier": 1.0,
+                "fuel_multiplier": 0.98,
+                "climb_reliability_bonus": 0.08,
+                "auto_climb_bonus": 0.03,
+                "expected_foul_points": 4.0,
+                "defense_sensitivity": 0.35,
+                "defense_multiplier": 0.95,
+            },
+            "target_bonus_rps": ["ENERGIZED RP", "TRAVERSAL RP"],
+        },
+        "Shift-Aware Fuel Pressure": {
+            "profile_mix": ["fuel_sprinter", "fuel_sprinter", "support_disruptor"],
+            "modifiers": {
+                "cycle_multiplier": 0.94,
+                "fuel_multiplier": 1.08,
+                "climb_reliability_bonus": -0.02,
+                "auto_climb_bonus": 0.0,
+                "expected_foul_points": 6.0,
+                "defense_sensitivity": 0.65,
+                "defense_multiplier": 1.15,
+            },
+            "target_bonus_rps": ["ENERGIZED RP", "SUPERCHARGED RP"],
+        },
+        "Tower Anchor Plus Fuel Support": {
+            "profile_mix": ["tower_anchor", "balanced_climber", "fuel_sprinter"],
+            "modifiers": {
+                "cycle_multiplier": 1.02,
+                "fuel_multiplier": 0.95,
+                "climb_reliability_bonus": 0.1,
+                "auto_climb_bonus": 0.05,
+                "expected_foul_points": 3.5,
+                "defense_sensitivity": 0.4,
+                "defense_multiplier": 1.0,
+            },
+            "target_bonus_rps": ["TRAVERSAL RP", "ENERGIZED RP"],
+        },
+    }
+    strategy_scenarios = []
+    for candidate in candidates:
+        scenario = scenario_by_name.get(candidate["name"], None)
+        if not scenario:
+            continue
+        strategy_scenarios.append(
+            {
+                "name": candidate["name"],
+                "summary": candidate["expected_value"],
+                "assumptions": candidate["assumptions"],
+                "risks": candidate["key_risks"],
+                "profile_mix": scenario["profile_mix"],
+                "modifiers": scenario["modifiers"],
+                "target_bonus_rps": scenario["target_bonus_rps"],
+                "citations": candidate["citations"],
+            }
+        )
+
+    return {
+        "success": True,
+        "artifact_paths": [
+            f"artifacts/{year}/strategy_packet.json",
+            f"artifacts/{year}/strategy_brief.md",
+            f"artifacts/{year}/team_decision_packet.md",
+        ],
+        "warnings": [
+            "Strategy scenarios are still abstract capability mixes, not recommendations for a specific team robot.",
+            "Cycle assumptions use coarse field distances and should be re-validated after human review of the field drawings.",
+        ],
+        "metadata": metadata,
+        "game_summary": {
+            "objective": "Outscore the opponent while converting enough active-HUB fuel and tower points to maximize ranking-point pressure.",
+            "phase_structure": insight_packet.get("phase_model", {}),
+            "hub_schedule_summary": "Both HUBs are active in AUTO, TRANSITION, and ENDGAME. Each alliance receives two active alliance shifts and two inactive shifts in TELEOP.",
+            "ranking_point_summary": insight_packet.get("rp_model", []),
+            "citations": rules["citations"],
+        },
+        "task_candidates": [
+            {
+                "name": "auto_preload_conversion",
+                "phase": "AUTO",
+                "description": "Convert preloaded FUEL while both HUBs are active and decide whether a reliable LEVEL 1 auto climb is worth the trade.",
+                "citations": rules["scoring"][0]["citations"] + rules["scoring"][3]["citations"],
+            },
+            {
+                "name": "active_hub_fuel_cycle",
+                "phase": "TELEOP",
+                "description": "Exploit active HUB windows for repeated FUEL scoring and treat inactive windows as collection or defense setup time.",
+                "citations": rules["hub_status"]["citations"],
+            },
+            {
+                "name": "inactive_window_collection",
+                "phase": "TELEOP",
+                "description": "Use inactive HUB windows to stockpile FUEL so the next active shift opens with loaded robots instead of dead travel time.",
+                "citations": rules["hub_status"]["citations"] + rules["match_setup"]["citations"],
+            },
+            {
+                "name": "tower_commit_timing",
+                "phase": "ENDGAME",
+                "description": "Commit to a tower level only when the endgame point rate beats continued active-HUB scoring for the remaining clock.",
+                "citations": rules["scoring"][4]["citations"] + rules["scoring"][6]["citations"],
+            },
+            {
+                "name": "protected_zone_discipline",
+                "phase": "MATCH",
+                "description": "Avoid donating foul points around towers and protected scoring lanes, especially in the final 30 seconds.",
+                "citations": rules["penalties"][0]["citations"] + rules["penalties"][1]["citations"],
+            },
+        ],
+        "role_candidates": [
+            {
+                "name": "fuel_pressure",
+                "best_fit_profiles": ["fuel_sprinter"],
+                "description": "Primary scorer focused on active-HUB throughput and ENERGIZED pressure.",
+                "citations": rules["ranking_points"][0]["citations"],
+            },
+            {
+                "name": "balanced_rp_partner",
+                "best_fit_profiles": ["balanced_climber"],
+                "description": "Supports fuel scoring while retaining a credible path to LEVEL 2 tower points.",
+                "citations": rules["ranking_points"][0]["citations"] + rules["ranking_points"][2]["citations"],
+            },
+            {
+                "name": "tower_anchor",
+                "best_fit_profiles": ["tower_anchor"],
+                "description": "Stabilizes TRAVERSAL RP paths and provides playoff floor if fuel throughput stalls.",
+                "citations": rules["ranking_points"][2]["citations"] + rules["scoring"][6]["citations"],
+            },
+            {
+                "name": "lane_disruptor",
+                "best_fit_profiles": ["support_disruptor"],
+                "description": "Uses inactive HUB windows to pressure fuel lanes and reduce opponent scoring efficiency without overcommitting to fouls.",
+                "citations": rules["hub_status"]["citations"] + rules["penalties"][0]["citations"],
+            },
+        ],
+        "scoring_priorities": [
+            {
+                "priority": 1,
+                "name": "Reliable active-HUB fuel throughput",
+                "reason": "This is the primary path to both match points and the ENERGIZED RP.",
+                "citations": rules["scoring"][0]["citations"] + rules["ranking_points"][0]["citations"],
+            },
+            {
+                "priority": 2,
+                "name": "Tower points that secure the TRAVERSAL RP floor",
+                "reason": "Tower scoring is the only extracted path to the 50-point climb threshold bonus RP.",
+                "citations": rules["scoring"][4]["citations"] + rules["ranking_points"][2]["citations"],
+            },
+            {
+                "priority": 3,
+                "name": "Inactive-window staging and legal defense",
+                "reason": "Inactive HUB windows are dead score time unless they are converted into the next active-cycle advantage or legal disruption.",
+                "citations": rules["hub_status"]["citations"] + rules["penalties"][0]["citations"],
+            },
+        ],
+        "cycle_assumptions": {
+            "active_hub_time_s": 90,
+            "coarse_paths_m": coarse_paths,
+            "capability_profiles": profiles,
+            "notes": [
+                "Coarse paths are 1D references from the field model and do not include congestion or obstacle routing penalties.",
+                "Inactive HUB windows are modeled as staging time that improves the next active window rather than as separate scoring windows.",
+            ],
+        },
+        "risk_notes": [
+            {
+                "severity": "high",
+                "note": "Any strategy that misses HUB activity state awareness wastes entire scoring cycles for zero points.",
+                "citations": rules["hub_status"]["citations"],
+            },
+            {
+                "severity": "high",
+                "note": "Tower contact fouls in the last 30 seconds can erase the value of a full climb.",
+                "citations": rules["penalties"][1]["citations"],
+            },
+            {
+                "severity": "medium",
+                "note": "The SUPERCHARGED RP threshold appears far above what a single robot can cover; it should be treated as an alliance-level stretch target.",
+                "citations": rules["ranking_points"][1]["citations"],
+            },
+        ],
+        "open_questions": insight_packet.get("open_questions", []),
+        "strategy_scenarios": strategy_scenarios,
+    }
+
+
+def build_strategy_brief_md(strategy_packet: dict[str, Any]) -> str:
+    lines = [
+        "# Strategy Brief",
+        "",
+        f"Generated: {strategy_packet['metadata']['generated_at']}",
+        "",
+        "## Top Priorities",
+    ]
+    for item in strategy_packet.get("scoring_priorities", []):
+        lines.append(f"- P{item['priority']}: {item['name']} - {item['reason']}")
+    lines.extend(["", "## Candidate Strategy Mixes"])
+    for scenario in strategy_packet.get("strategy_scenarios", []):
+        profile_mix = ", ".join(scenario.get("profile_mix", []))
+        target_rps = ", ".join(scenario.get("target_bonus_rps", []))
+        lines.append(f"- {scenario['name']}: {scenario['summary']}")
+        lines.append(f"  Profile mix: {profile_mix}")
+        lines.append(f"  Target bonus RPs: {target_rps}")
+    lines.extend(["", "## Key Risks"])
+    for risk in strategy_packet.get("risk_notes", []):
+        lines.append(f"- {risk['severity'].upper()}: {risk['note']}")
+    return "\n".join(lines).strip() + "\n"
+
+
+def build_team_decision_packet_md(strategy_packet: dict[str, Any]) -> str:
+    cycle_assumptions = strategy_packet.get("cycle_assumptions", {})
+    profiles = cycle_assumptions.get("capability_profiles", {})
+    lines = [
+        "# Team Decision Packet",
+        "",
+        f"Generated: {strategy_packet['metadata']['generated_at']}",
+        "",
+        "## Strategic Choices",
+    ]
+    for scenario in strategy_packet.get("strategy_scenarios", []):
+        lines.append(f"- {scenario['name']}: {scenario['summary']}")
+    lines.extend(["", "## Robot Capability Questions"])
+    for profile_name, profile in profiles.items():
+        cycle_range = profile.get("cycle_time_s", [0.0, 0.0])
+        lines.append(
+            f"- Can the robot credibly achieve the {profile_name} envelope of {cycle_range[0]}-{cycle_range[1]} s active-HUB cycles while maintaining {profile.get('description', '').lower()}"
+        )
+    lines.extend(["", "## Simulation Assumptions To Validate"])
+    for note in cycle_assumptions.get("notes", []):
+        lines.append(f"- {note}")
+    lines.extend(["", "## Open Rule Questions"])
+    for question in strategy_packet.get("open_questions", []):
+        lines.append(f"- {question}")
+    return "\n".join(lines).strip() + "\n"
+
+
+def build_simulation_model(
+    year: str,
+    field_model: dict[str, Any],
+    mechanics: dict[str, Any],
+    strategy_packet: dict[str, Any],
+) -> dict[str, Any]:
+    metadata = base_metadata(
+        "simulate",
+        year,
+        strategy_packet["metadata"]["source_manual_hash"],
+        strategy_packet["metadata"]["manual_version"],
+        "sim_engineer",
+    )
+    metadata["source_field_drawing_hash"] = field_model["metadata"]["source_field_drawing_hash"]
+    return {
+        "success": True,
+        "artifact_paths": [f"artifacts/{year}/simulation_model.json"],
+        "warnings": [
+            "This is a coarse alliance-level model intended for relative ranking, not a possession-accurate match simulator.",
+        ],
+        "metadata": metadata,
+        "field_model_ref": f"artifacts/{year}/field_model.json",
+        "mechanics_ref": f"artifacts/{year}/mechanics.json",
+        "strategy_packet_ref": f"artifacts/{year}/strategy_packet.json",
+        "entities": [
+            {"name": "alliance_robot", "count": 3, "state": ["collecting", "scoring", "climbing", "defending"]},
+            {"name": "fuel_pool", "count": mechanics["resource_constraints"][0]["limit"], "state": ["staged", "carried", "scored", "recycled"]},
+            {"name": "hub_state", "count": 2, "state": ["active", "inactive"]},
+        ],
+        "actions": [
+            {"name": "collect_fuel", "parameters": ["cycle_time_s", "field_path_m"], "citations": strategy_packet["task_candidates"][1]["citations"]},
+            {"name": "score_fuel_active_hub", "parameters": ["accuracy", "hub_activity"], "citations": mechanics["scoring_model"][0]["citations"]},
+            {"name": "commit_climb", "parameters": ["climb_level", "commit_time_s", "success_probability"], "citations": mechanics["scoring_model"][4]["citations"]},
+            {"name": "apply_lane_defense", "parameters": ["defense_pressure", "foul_risk"], "citations": strategy_packet["task_candidates"][4]["citations"]},
+        ],
+        "timing": mechanics["phase_limits"],
+        "scoring": mechanics["scoring_model"],
+        "constraints": {
+            "fuel_total": mechanics["resource_constraints"][0],
+            "hub_schedule": mechanics["hub_status_schedule"],
+            "tower_limit": mechanics["resource_constraints"][3],
+            "coarse_paths": field_model.get("coarse_paths", {}),
+        },
+    }
+
+
+def build_sim_params(
+    year: str,
+    field_model: dict[str, Any],
+    strategy_packet: dict[str, Any],
+) -> dict[str, Any]:
+    metadata = base_metadata(
+        "simulate",
+        year,
+        strategy_packet["metadata"]["source_manual_hash"],
+        strategy_packet["metadata"]["manual_version"],
+        "sim_engineer",
+    )
+    metadata["source_field_drawing_hash"] = field_model["metadata"]["source_field_drawing_hash"]
+    capability_profiles = strategy_packet["cycle_assumptions"]["capability_profiles"]
+    return {
+        "success": True,
+        "artifact_paths": [f"artifacts/{year}/sim_params.json"],
+        "warnings": [
+            "Seeded sweeps use abstract capability envelopes instead of robot-specific measured data.",
+        ],
+        "metadata": metadata,
+        "seed_set": [2026, 2027, 2028, 2029, 2030],
+        "matches_per_seed": 120,
+        "capability_profiles": capability_profiles,
+        "cycle_time_ranges": [
+            {
+                "profile": name,
+                "cycle_time_s": profile["cycle_time_s"],
+                "teleop_accuracy": profile["teleop_accuracy"],
+                "auto_fuel_scored": profile["auto_fuel_scored"],
+            }
+            for name, profile in capability_profiles.items()
+        ],
+        "strategy_scenarios": strategy_packet.get("strategy_scenarios", []),
+        "reference_opponent": {
+            "name": "Balanced Reference Alliance",
+            "profile_mix": ["balanced_climber", "balanced_climber", "fuel_sprinter"],
+            "modifiers": {
+                "cycle_multiplier": 1.0,
+                "fuel_multiplier": 1.0,
+                "climb_reliability_bonus": 0.02,
+                "auto_climb_bonus": 0.02,
+                "expected_foul_points": 4.5,
+                "defense_sensitivity": 0.45,
+                "defense_multiplier": 1.0,
+            },
+        },
+        "assumption_notes": [
+            "Each alliance gets 90 seconds of active-HUB time across TRANSITION, active shifts, and ENDGAME before climb commit losses.",
+            "Defense pressure is modeled as a cycle-time drag factor rather than explicit path blocking.",
+            "Inactive shifts are treated as staging time that boosts the next active scoring wave, not as direct scoring windows.",
+        ],
+    }
+
+
+def _sample_weighted_level(options: list[dict[str, Any]], rng: random.Random) -> int:
+    total = sum(float(option.get("weight", 0.0)) for option in options)
+    if total <= 0:
+        return 0
+    target = rng.random() * total
+    running = 0.0
+    for option in options:
+        running += float(option.get("weight", 0.0))
+        if target <= running:
+            return int(option.get("level", 0))
+    return int(options[-1].get("level", 0))
+
+
+def _simulate_alliance_output(
+    profile_mix: list[str],
+    profiles: dict[str, dict[str, Any]],
+    modifiers: dict[str, float],
+    opponent_defense_pressure: float,
+    total_fuel_limit: int,
+    rng: random.Random,
+    cycle_scale: float = 1.0,
+    defense_scale: float = 1.0,
+) -> dict[str, float]:
+    climb_points = {0: 0, 1: 10, 2: 20, 3: 30}
+    climb_commit_ranges = {0: (0.0, 0.0), 1: (8.0, 12.0), 2: (12.0, 18.0), 3: (18.0, 26.0)}
+    total_fuel = 0.0
+    total_tower = 0.0
+    active_scoring_seconds = 0.0
+    for profile_name in profile_mix:
+        profile = profiles[profile_name]
+        cycle_time = rng.uniform(*profile["cycle_time_s"])
+        cycle_time *= cycle_scale * modifiers.get("cycle_multiplier", 1.0)
+        cycle_time *= 1.0 + (opponent_defense_pressure * defense_scale * modifiers.get("defense_sensitivity", 0.5) * 0.12)
+        accuracy = rng.uniform(*profile["teleop_accuracy"]) * modifiers.get("fuel_multiplier", 1.0)
+        accuracy = min(0.98, max(0.55, accuracy))
+        auto_fuel = rng.uniform(*profile["auto_fuel_scored"])
+        total_fuel += auto_fuel
+        if rng.random() <= min(0.95, max(0.0, profile["auto_l1_probability"] + modifiers.get("auto_climb_bonus", 0.0))):
+            total_tower += 15.0
+        climb_level = _sample_weighted_level(profile["teleop_climb_options"], rng)
+        climb_success = min(0.98, max(0.4, profile["climb_success_base"] + modifiers.get("climb_reliability_bonus", 0.0)))
+        commit_low, commit_high = climb_commit_ranges[climb_level]
+        commit_time = rng.uniform(commit_low, commit_high) if climb_level > 0 else 0.0
+        if climb_level > 0 and commit_time < 30.0 and rng.random() <= climb_success:
+            total_tower += float(climb_points[climb_level])
+            active_seconds = 60.0 + (30.0 - commit_time)
+        else:
+            active_seconds = 90.0
+        active_scoring_seconds += active_seconds
+        total_fuel += (active_seconds / max(cycle_time, 1.0)) * accuracy
+    total_fuel = min(float(total_fuel_limit), total_fuel)
+    foul_points = max(0.0, rng.gauss(modifiers.get("expected_foul_points", 0.0), 1.5))
+    match_points = max(0.0, total_fuel + total_tower - foul_points)
+    return {
+        "fuel_points": total_fuel,
+        "tower_points": total_tower,
+        "foul_points": foul_points,
+        "match_points": match_points,
+        "active_scoring_seconds": active_scoring_seconds,
+    }
+
+
+def _run_strategy_scenario(
+    scenario: dict[str, Any],
+    sim_params: dict[str, Any],
+    total_fuel_limit: int,
+    cycle_scale: float = 1.0,
+    defense_scale: float = 1.0,
+) -> dict[str, Any]:
+    profiles = sim_params["capability_profiles"]
+    reference = sim_params["reference_opponent"]
+    seeds = sim_params["seed_set"]
+    matches_per_seed = int(sim_params["matches_per_seed"])
+    our_defense_pressure = (
+        sum(float(profiles[name]["defense_pressure"]) for name in scenario["profile_mix"]) / max(len(scenario["profile_mix"]), 1)
+    ) * float(scenario["modifiers"].get("defense_multiplier", 1.0))
+    opponent_defense_pressure = (
+        sum(float(profiles[name]["defense_pressure"]) for name in reference["profile_mix"]) / max(len(reference["profile_mix"]), 1)
+    ) * float(reference["modifiers"].get("defense_multiplier", 1.0))
+
+    wins = 0
+    ties = 0
+    total_match_points = 0.0
+    total_fuel_points = 0.0
+    total_tower_points = 0.0
+    total_foul_points = 0.0
+    total_rp = 0.0
+    energized = 0
+    supercharged = 0
+    traversal = 0
+    total_matches = len(seeds) * matches_per_seed
+
+    for seed in seeds:
+        rng = random.Random(seed)
+        for _ in range(matches_per_seed):
+            ours = _simulate_alliance_output(
+                scenario["profile_mix"],
+                profiles,
+                scenario["modifiers"],
+                opponent_defense_pressure,
+                total_fuel_limit,
+                rng,
+                cycle_scale=cycle_scale,
+                defense_scale=defense_scale,
+            )
+            opponent = _simulate_alliance_output(
+                reference["profile_mix"],
+                profiles,
+                reference["modifiers"],
+                our_defense_pressure,
+                total_fuel_limit,
+                rng,
+                cycle_scale=cycle_scale,
+                defense_scale=defense_scale,
+            )
+            total_match_points += ours["match_points"]
+            total_fuel_points += ours["fuel_points"]
+            total_tower_points += ours["tower_points"]
+            total_foul_points += ours["foul_points"]
+            match_rp = 0.0
+            if ours["match_points"] > opponent["match_points"]:
+                wins += 1
+                match_rp += 3.0
+            elif math.isclose(ours["match_points"], opponent["match_points"], rel_tol=0.0, abs_tol=0.5):
+                ties += 1
+                match_rp += 1.0
+            if ours["fuel_points"] >= 100.0:
+                energized += 1
+                match_rp += 1.0
+            if ours["fuel_points"] >= 360.0:
+                supercharged += 1
+                match_rp += 1.0
+            if ours["tower_points"] >= 50.0:
+                traversal += 1
+                match_rp += 1.0
+            total_rp += match_rp
+
+    average = lambda value: round(value / total_matches, 3) if total_matches else 0.0
+    return {
+        "name": scenario["name"],
+        "profile_mix": scenario["profile_mix"],
+        "matches": total_matches,
+        "avg_match_points": average(total_match_points),
+        "avg_fuel_points": average(total_fuel_points),
+        "avg_tower_points": average(total_tower_points),
+        "avg_foul_points": average(total_foul_points),
+        "avg_ranking_points": average(total_rp),
+        "win_rate_vs_reference": round(wins / total_matches, 4) if total_matches else 0.0,
+        "tie_rate_vs_reference": round(ties / total_matches, 4) if total_matches else 0.0,
+        "energized_rp_rate": round(energized / total_matches, 4) if total_matches else 0.0,
+        "supercharged_rp_rate": round(supercharged / total_matches, 4) if total_matches else 0.0,
+        "traversal_rp_rate": round(traversal / total_matches, 4) if total_matches else 0.0,
+    }
+
+
+def build_sim_summary(
+    year: str,
+    rules: dict[str, Any],
+    field_model: dict[str, Any],
+    strategy_packet: dict[str, Any],
+    sim_params: dict[str, Any],
+) -> dict[str, Any]:
+    metadata = base_metadata(
+        "simulate",
+        year,
+        rules["metadata"]["source_manual_hash"],
+        rules["metadata"]["manual_version"],
+        "sim_engineer",
+    )
+    metadata["source_field_drawing_hash"] = field_model["metadata"]["source_field_drawing_hash"]
+    scenarios = strategy_packet.get("strategy_scenarios", [])
+    total_fuel_limit = int(rules["match_setup"]["total_fuel"])
+    baseline_results = [_run_strategy_scenario(scenario, sim_params, total_fuel_limit) for scenario in scenarios]
+    slow_cycle_results = {
+        result["name"]: _run_strategy_scenario(scenario, sim_params, total_fuel_limit, cycle_scale=1.15)
+        for scenario, result in zip(scenarios, baseline_results)
+    }
+    heavy_defense_results = {
+        result["name"]: _run_strategy_scenario(scenario, sim_params, total_fuel_limit, defense_scale=1.25)
+        for scenario, result in zip(scenarios, baseline_results)
+    }
+    ranked = []
+    for result in baseline_results:
+        slow = slow_cycle_results[result["name"]]
+        defense = heavy_defense_results[result["name"]]
+        combined = dict(result)
+        combined["cycle_sensitivity_match_points"] = round(result["avg_match_points"] - slow["avg_match_points"], 3)
+        combined["defense_sensitivity_match_points"] = round(result["avg_match_points"] - defense["avg_match_points"], 3)
+        combined["robustness_index"] = round(
+            result["avg_ranking_points"] - (combined["cycle_sensitivity_match_points"] * 0.03) - (combined["defense_sensitivity_match_points"] * 0.02),
+            3,
+        )
+        ranked.append(combined)
+    ranked.sort(key=lambda item: (item["avg_ranking_points"], item["win_rate_vs_reference"], item["avg_match_points"]), reverse=True)
+
+    sensitivity_notes = []
+    for item in ranked:
+        sensitivity_notes.append(
+            f"{item['name']}: +15% slower cycles cost about {item['cycle_sensitivity_match_points']} match points and heavy defense costs about {item['defense_sensitivity_match_points']} match points."
+        )
+
+    robust_findings = []
+    if ranked:
+        robust_findings.append(
+            f"Best overall strategy in the current abstract sweep: {ranked[0]['name']} at {ranked[0]['avg_ranking_points']} average RP and {ranked[0]['avg_match_points']} average match points versus the balanced reference alliance."
+        )
+        best_traversal = max(ranked, key=lambda item: item["traversal_rp_rate"])
+        best_fuel = max(ranked, key=lambda item: item["energized_rp_rate"])
+        robust_findings.append(
+            f"Most reliable TRAVERSAL path: {best_traversal['name']} at traversal rate {best_traversal['traversal_rp_rate']:.2%}."
+        )
+        robust_findings.append(
+            f"Strongest ENERGIZED pressure: {best_fuel['name']} at energized rate {best_fuel['energized_rp_rate']:.2%}."
+        )
+    robust_findings.append("SUPERCHARGED remains an outlier target in the current coarse model and should not drive early robot architecture choices without measured cycle data.")
+
+    warnings = [
+        "These results are relative rankings against a reference alliance, not score predictions for a real event.",
+        "Cycle-time drag from defense is modeled statistically rather than by explicit path blocking or foul adjudication.",
+    ]
+    return {
+        "success": True,
+        "artifact_paths": [f"artifacts/{year}/sim_summary.json"],
+        "warnings": warnings,
+        "metadata": metadata,
+        "seed_set": sim_params["seed_set"],
+        "ranked_strategies": ranked,
+        "sensitivity_notes": sensitivity_notes,
+        "robust_findings": robust_findings,
+        "reference_opponent": sim_params["reference_opponent"],
+    }
+
+
+def build_simulation_report_md(
+    strategy_packet: dict[str, Any],
+    sim_params: dict[str, Any],
+    sim_summary: dict[str, Any],
+) -> str:
+    lines = [
+        "# Simulation Report",
+        "",
+        f"Generated: {sim_summary['metadata']['generated_at']}",
+        f"Seeds: {', '.join(str(seed) for seed in sim_summary.get('seed_set', []))}",
+        f"Matches per seed: {sim_params.get('matches_per_seed', 0)}",
+        "",
+        "## Ranked Strategies",
+        "",
+        "| Strategy | Avg RP | Win Rate | Avg Match Pts | ENERGIZED | TRAVERSAL |",
+        "|----------|--------|----------|---------------|-----------|-----------|",
+    ]
+    for item in sim_summary.get("ranked_strategies", []):
+        lines.append(
+            f"| {item['name']} | {item['avg_ranking_points']} | {item['win_rate_vs_reference']:.2%} | {item['avg_match_points']} | {item['energized_rp_rate']:.2%} | {item['traversal_rp_rate']:.2%} |"
+        )
+    lines.extend(["", "## Sensitivity Notes"])
+    for note in sim_summary.get("sensitivity_notes", []):
+        lines.append(f"- {note}")
+    lines.extend(["", "## Robust Findings"])
+    for finding in sim_summary.get("robust_findings", []):
+        lines.append(f"- {finding}")
+    lines.extend(["", "## Strategy Scenarios Simulated"])
+    for scenario in strategy_packet.get("strategy_scenarios", []):
+        lines.append(f"- {scenario['name']}: profiles {', '.join(scenario.get('profile_mix', []))}")
+    return "\n".join(lines).strip() + "\n"
+
+
+def build_game_spec_v2(
+    year: str,
+    rules: dict[str, Any],
+    field_model: dict[str, Any],
+    mechanics: dict[str, Any],
+    strategy_packet: dict[str, Any],
+    sim_summary: dict[str, Any],
+) -> dict[str, Any]:
+    top_strategy = sim_summary.get("ranked_strategies", [])
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "game_year": year,
+        "game_name": rules["metadata"]["game_name"],
+        "manual_version": rules["metadata"]["manual_version"],
+        "generated_at": utc_now(),
+        "source_manual_hash": rules["metadata"]["source_manual_hash"],
+        "source_field_drawing_hash": field_model["metadata"]["source_field_drawing_hash"],
+        "generator_versions": {GENERATOR_NAME: GENERATOR_VERSION},
+        "normalized_rules": {
+            "timing": rules["timing"],
+            "scoring": rules["scoring"],
+            "ranking_points": rules["ranking_points"],
+            "penalties": rules["penalties"],
+            "field_rules": rules["field_rules"],
+            "equipment_limits": rules["equipment_limits"],
+            "match_setup": rules["match_setup"],
+            "hub_status": rules["hub_status"],
+        },
+        "field_geometry": {
+            "field_dimensions": field_model["field_dimensions"],
+            "reference_frames": field_model["reference_frames"],
+            "zones": field_model["zones"],
+            "scoring_locations": field_model["scoring_locations"],
+            "game_piece_locations": field_model["game_piece_locations"],
+            "obstacles": field_model["obstacles"],
+        },
+        "mechanics": {
+            "states": mechanics["states"],
+            "transitions": mechanics["transitions"],
+            "resource_constraints": mechanics["resource_constraints"],
+            "phase_limits": mechanics["phase_limits"],
+            "scoring_model": mechanics["scoring_model"],
+            "penalty_model": mechanics["penalty_model"],
+            "win_conditions": mechanics["win_conditions"],
+        },
+        "selected_strategy_assumptions": {
+            "recommended_strategy": top_strategy[0]["name"] if top_strategy else None,
+            "ranked_strategies": sim_summary.get("ranked_strategies", []),
+            "scoring_priorities": strategy_packet["scoring_priorities"],
+            "role_candidates": strategy_packet["role_candidates"],
+            "cycle_assumptions": strategy_packet["cycle_assumptions"],
+            "open_questions": strategy_packet["open_questions"],
+            "simulation_seed_set": sim_summary.get("seed_set", []),
+        },
+        "artifact_refs": {
+            "rules": f"artifacts/{year}/rules.json",
+            "field_layout_reference": f"artifacts/{year}/field_layout_reference.json",
+            "field_model": f"artifacts/{year}/field_model.json",
+            "mechanics": f"artifacts/{year}/mechanics.json",
+            "strategy_packet": f"artifacts/{year}/strategy_packet.json",
+            "sim_summary": f"artifacts/{year}/sim_summary.json",
+        },
+    }
+
+
+def validate_outputs_v2(
+    year: str,
+    rules: dict[str, Any],
+    field_layout_reference: dict[str, Any],
+    field_model: dict[str, Any],
+    mechanics: dict[str, Any],
+    strategy_packet: dict[str, Any],
+    simulation_model: dict[str, Any],
+    sim_params: dict[str, Any],
+    sim_summary: dict[str, Any],
+) -> dict[str, Any]:
+    required_rules_keys = {"sections", "scoring", "penalties", "field_rules", "timing", "equipment_limits", "citations"}
+    required_field_layout_keys = {"metadata", "drawing_pages", "dimension_tokens", "raw_locations", "confidence_notes"}
+    required_field_model_keys = {"metadata", "field_dimensions", "reference_frames", "zones", "scoring_locations", "game_piece_locations", "obstacles"}
+    required_mechanics_keys = {"states", "transitions", "resource_constraints", "phase_limits", "scoring_model", "penalty_model"}
+    required_strategy_keys = {"game_summary", "task_candidates", "role_candidates", "scoring_priorities", "cycle_assumptions", "risk_notes", "open_questions"}
+    required_sim_model_keys = {"field_model_ref", "mechanics_ref", "entities", "actions", "timing", "scoring", "constraints"}
+    required_sim_params_keys = {"seed_set", "capability_profiles", "cycle_time_ranges", "strategy_scenarios", "assumption_notes"}
+    required_sim_summary_keys = {"seed_set", "ranked_strategies", "sensitivity_notes", "robust_findings", "warnings"}
+
+    defects = []
+    missing_rules = sorted(required_rules_keys.difference(rules))
+    missing_field_layout = sorted(required_field_layout_keys.difference(field_layout_reference))
+    missing_field_model = sorted(required_field_model_keys.difference(field_model))
+    missing_mechanics = sorted(required_mechanics_keys.difference(mechanics))
+    missing_strategy = sorted(required_strategy_keys.difference(strategy_packet))
+    missing_sim_model = sorted(required_sim_model_keys.difference(simulation_model))
+    missing_sim_params = sorted(required_sim_params_keys.difference(sim_params))
+    missing_sim_summary = sorted(required_sim_summary_keys.difference(sim_summary))
+
+    for name, missing in [
+        ("rules.json", missing_rules),
+        ("field_layout_reference.json", missing_field_layout),
+        ("field_model.json", missing_field_model),
+        ("mechanics.json", missing_mechanics),
+        ("strategy_packet.json", missing_strategy),
+        ("simulation_model.json", missing_sim_model),
+        ("sim_params.json", missing_sim_params),
+        ("sim_summary.json", missing_sim_summary),
+    ]:
+        if missing:
+            defects.append(
+                {
+                    "severity": "critical",
+                    "description": f"{name} missing keys: {', '.join(missing)}",
+                    "recommended_action": f"Fix the {name} generator contract before rerunning the pipeline.",
+                }
+            )
+
+    if not all(item.get("citations") for item in rules.get("scoring", [])):
+        defects.append(
+            {
+                "severity": "critical",
+                "description": "At least one scoring action lacks citations.",
+                "recommended_action": "Attach citations to every scoring action in rules.json.",
+            }
+        )
+    if not all(item.get("citations") for item in strategy_packet.get("task_candidates", [])):
+        defects.append(
+            {
+                "severity": "major",
+                "description": "At least one task candidate lacks citations.",
+                "recommended_action": "Map every strategic task candidate to extracted rules.",
+            }
+        )
+    if not sim_summary.get("ranked_strategies"):
+        defects.append(
+            {
+                "severity": "critical",
+                "description": "Simulation summary did not produce ranked strategies.",
+                "recommended_action": "Check simulation scenario generation and rerun the seeded sweeps.",
+            }
+        )
+    if sim_params.get("seed_set") != sim_summary.get("seed_set"):
+        defects.append(
+            {
+                "severity": "major",
+                "description": "sim_params and sim_summary seed sets do not match.",
+                "recommended_action": "Ensure the simulation summary is generated from the exact declared seed set.",
+            }
+        )
+    defects.append(
+        {
+            "severity": "major",
+            "description": "Extraction recall has not been independently audited against the intended release gate.",
+            "recommended_action": "Run a manual citation and table audit before treating this run as production-ready.",
+        }
+    )
+
+    has_critical = any(defect["severity"] == "critical" for defect in defects)
+    has_major = any(defect["severity"] == "major" for defect in defects)
+    if has_critical:
+        release_decision = "blocked_due_to_validation_errors"
+    elif has_major:
+        release_decision = "blocked_until_recall_audit"
+    else:
+        release_decision = "release_candidate"
+
+    return {
+        "run_id": f"{year}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
+        "success": not has_critical,
+        "artifact_paths": [f"artifacts/{year}/validation_report.json"],
+        "warnings": ["This is a bootstrap validation pass for the narrowed extraction/strategy/simulation MVP."],
+        "metadata": base_metadata(
+            "validate",
+            year,
+            rules["metadata"]["source_manual_hash"],
+            rules["metadata"]["manual_version"],
+            "qa_validator",
+        ),
+        "gates": {
+            "rules_contract": "pass" if not missing_rules else "fail",
+            "field_layout_contract": "pass" if not missing_field_layout else "fail",
+            "field_model_contract": "pass" if not missing_field_model else "fail",
+            "mechanics_contract": "pass" if not missing_mechanics else "fail",
+            "strategy_contract": "pass" if not missing_strategy else "fail",
+            "simulation_model_contract": "pass" if not missing_sim_model else "fail",
+            "simulation_params_contract": "pass" if not missing_sim_params else "fail",
+            "simulation_summary_contract": "pass" if not missing_sim_summary else "fail",
+            "scoring_citations": "pass" if all(item.get('citations') for item in rules.get('scoring', [])) else "fail",
+            "strategy_citations": "pass" if all(item.get('citations') for item in strategy_packet.get('task_candidates', [])) else "fail",
+            "release_recall_audit": "fail",
+        },
+        "defects": defects,
+        "recommended_actions": [
+            "Audit the extracted scoring and ranking-point tables against the source manual before release.",
+            "Trace the field drawing manually to replace the coarse HUB and tower coordinates in field_model.json.",
+            "Re-run the seeded sweeps once measured robot cycle times are available.",
+        ],
+        "release_decision": release_decision,
+    }
+
+
 def build_game_spec(year: str, rules: dict[str, Any], mechanics: dict[str, Any], packet: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -2069,6 +3473,7 @@ def run_pipeline(root: Path, year: str, manual_path: Path, field_drawing_path: P
         raise FileNotFoundError(f"Manual not found: {manual_path}")
     if not field_drawing_path.exists():
         raise FileNotFoundError(f"Field drawing not found: {field_drawing_path}")
+    reset_artifact_output(root, year)
     ensure_dirs(root, year)
     manual_hash = sha256_file(manual_path)
     field_drawing_hash = sha256_file(field_drawing_path)
@@ -2082,12 +3487,17 @@ def run_pipeline(root: Path, year: str, manual_path: Path, field_drawing_path: P
     rules_path = artifacts_dir / "rules.json"
     manual_sections_index_path = artifacts_dir / "manual_sections_index.json"
     field_layout_reference_path = artifacts_dir / "field_layout_reference.json"
+    extraction_report_path = artifacts_dir / "extraction_report.md"
+    field_model_path = artifacts_dir / "field_model.json"
     apriltag_layout_path = artifacts_dir / "apriltag_field_layout.json"
     mechanics_path = artifacts_dir / "mechanics.json"
-    packet_path = artifacts_dir / "manual_insight_packet.json"
-    strategy_path = artifacts_dir / "strategy_hypotheses.md"
-    insight_md_path = artifacts_dir / "manual_insight_analysis.md"
-    sim_feedback_path = artifacts_dir / "sim_arch_feedback.json"
+    strategy_packet_path = artifacts_dir / "strategy_packet.json"
+    strategy_brief_path = artifacts_dir / "strategy_brief.md"
+    team_decision_packet_path = artifacts_dir / "team_decision_packet.md"
+    simulation_model_path = artifacts_dir / "simulation_model.json"
+    sim_params_path = artifacts_dir / "sim_params.json"
+    sim_summary_path = artifacts_dir / "sim_summary.json"
+    simulation_report_path = artifacts_dir / "simulation_report.md"
     game_spec_path = root / "context" / "game_spec.json"
     validation_path = artifacts_dir / "validation_report.json"
     state_path = artifacts_dir / "orchestration_state.json"
@@ -2096,35 +3506,49 @@ def run_pipeline(root: Path, year: str, manual_path: Path, field_drawing_path: P
     write_raw_text(raw_field_text_path, field_pages)
     rules = build_rules(year, manual_hash, manual_version, pages, root)
     write_json(rules_path, rules)
-    
+
     # Build manual sections index for context-efficient agent queries
+    manual_sections_index_present = False
     if HAS_DECOMPOSE:
         manual_sections = decompose_manual_to_sections(pages, year, manual_hash, manual_version)
         write_json(manual_sections_index_path, manual_sections)
-    
+        manual_sections_index_present = True
+
     field_layout_reference = build_field_layout_reference(year, manual_hash, manual_version, field_drawing_hash, field_pages, rules)
     write_json(field_layout_reference_path, field_layout_reference)
+    extraction_report = build_extraction_report_md(rules, field_layout_reference, manual_sections_index_present)
+    extraction_report_path.write_text(extraction_report, encoding="utf-8")
+    field_model = build_field_model(year, rules, field_layout_reference)
+    write_json(field_model_path, field_model)
     apriltag_layout = build_apriltag_field_layout(year, manual_hash, manual_version, field_drawing_hash, rules)
     write_json(apriltag_layout_path, apriltag_layout)
-    mechanics = build_mechanics(year, rules)
+    mechanics = build_mechanics(year, rules, field_model)
     write_json(mechanics_path, mechanics)
-    sim_feedback, feedback_status, feedback_missing_keys = load_sim_arch_feedback(sim_feedback_path)
-    if feedback_status == "missing":
-        write_json(sim_feedback_path, build_sim_arch_feedback_template(year))
-        feedback_status = "template_created"
-    packet = build_insight_packet(year, rules, mechanics, sim_feedback)
-    if feedback_status not in {"loaded", "template", "template_created"}:
-        packet["warnings"].append(f"sim_arch_feedback ingestion status: {feedback_status}.")
-    if feedback_missing_keys:
-        packet["warnings"].append(
-            "sim_arch_feedback validation issues: " + "; ".join(feedback_missing_keys)
-        )
-    write_json(packet_path, packet)
-    strategy_path.write_text(build_strategy_markdown(packet), encoding="utf-8")
-    insight_md_path.write_text(build_insight_analysis_md(packet, rules, mechanics), encoding="utf-8")
-    game_spec = build_game_spec(year, rules, mechanics, packet)
+    insight_packet = build_insight_packet(year, rules, mechanics)
+    strategy_packet = build_strategy_packet(year, rules, field_model, mechanics, insight_packet)
+    write_json(strategy_packet_path, strategy_packet)
+    strategy_brief_path.write_text(build_strategy_brief_md(strategy_packet), encoding="utf-8")
+    team_decision_packet_path.write_text(build_team_decision_packet_md(strategy_packet), encoding="utf-8")
+    simulation_model = build_simulation_model(year, field_model, mechanics, strategy_packet)
+    write_json(simulation_model_path, simulation_model)
+    sim_params = build_sim_params(year, field_model, strategy_packet)
+    write_json(sim_params_path, sim_params)
+    sim_summary = build_sim_summary(year, rules, field_model, strategy_packet, sim_params)
+    write_json(sim_summary_path, sim_summary)
+    simulation_report_path.write_text(build_simulation_report_md(strategy_packet, sim_params, sim_summary), encoding="utf-8")
+    game_spec = build_game_spec_v2(year, rules, field_model, mechanics, strategy_packet, sim_summary)
     write_json(game_spec_path, game_spec)
-    validation = validate_outputs(year, rules, mechanics, packet, feedback_status, feedback_missing_keys)
+    validation = validate_outputs_v2(
+        year,
+        rules,
+        field_layout_reference,
+        field_model,
+        mechanics,
+        strategy_packet,
+        simulation_model,
+        sim_params,
+        sim_summary,
+    )
     write_json(validation_path, validation)
     manifest = write_manifest(
         root,
@@ -2137,12 +3561,17 @@ def run_pipeline(root: Path, year: str, manual_path: Path, field_drawing_path: P
             rules_path,
             manual_sections_index_path,
             field_layout_reference_path,
+            extraction_report_path,
+            field_model_path,
             apriltag_layout_path,
             mechanics_path,
-            packet_path,
-            strategy_path,
-            insight_md_path,
-            sim_feedback_path,
+            strategy_packet_path,
+            strategy_brief_path,
+            team_decision_packet_path,
+            simulation_model_path,
+            sim_params_path,
+            sim_summary_path,
+            simulation_report_path,
             game_spec_path,
             validation_path,
         ],
@@ -2157,8 +3586,8 @@ def run_pipeline(root: Path, year: str, manual_path: Path, field_drawing_path: P
         "current_stage": "qa_validator_bootstrap",
         "source_manual": rel_path(root, manual_path),
         "source_field_drawing": rel_path(root, field_drawing_path),
-        "agents_completed": ["pdf_extractor", "mechanic_analyst", "strategy_architect", "qa_validator"],
-        "agents_pending": ["robot_codegen", "power_engineer", "scout_dev", "sim_engineer", "mc_simulator", "advscope_integrator"],
+        "agents_completed": ["pdf_extractor", "field_modeler", "mechanic_analyst", "strategy_architect", "sim_engineer", "qa_validator"],
+        "agents_pending": [],
         "release_decision": validation["release_decision"],
         "next_actions": validation["recommended_actions"],
         "manifest": rel_path(root, artifacts_dir / "manifest.json"),

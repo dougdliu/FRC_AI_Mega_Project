@@ -131,3 +131,12 @@ These are useful future extensions, but they should not block the first working 
 | [pipeline_overview.md](pipeline_overview.md) | Stage-by-stage core flow, success criteria, and runtime targets |
 | [data_flow_and_architecture.md](data_flow_and_architecture.md) | Core data contracts and architecture decisions |
 | [iterationand_validation.md](iterationand_validation.md) | Iteration loop and validation gates |
+
+## 2D Sandbox
+
+The repo now includes a local 2D 3v3 sandbox in `game2d/` for REBUILT strategy exploration.
+
+- browser play loop: `cd game2d && npm run serve`
+- headless bot-vs-bot loop: `cd game2d && npm run simulate -- --matches 20`
+
+The sandbox reads `context/game_spec.json`, so generate the analysis artifacts before using it.

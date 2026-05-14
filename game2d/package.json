@@ -1,0 +1,9 @@
+{
+  "name": "rebuilt-2026-2d",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "serve": "node server.mjs",
+    "simulate": "node headless.mjs"
+  }
+}
